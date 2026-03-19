@@ -49,6 +49,3 @@ streamlit run app.py
 
 Happy chatting!
 **macOS/WSL users**: run these commands in a bash/zsh shell on macOS or within WSL; on Debian/Ubuntu you may need to install the `python3-venv` package (e.g. `sudo apt install python3-venv`) before creating the environment.
-=======
-# Export-Import-SanctionsChatbot
->>>>>>> 384eaadbc228ef51be30ae6e4a964bcc22bb5768
