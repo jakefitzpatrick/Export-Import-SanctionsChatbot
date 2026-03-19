@@ -1,0 +1,8 @@
+.venv/
+.env
+__pycache__/
+*.jsonl
+.rag_cache/
+*.npy
+*.csv
+*.ZIP
