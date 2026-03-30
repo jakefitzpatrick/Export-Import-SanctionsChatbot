@@ -1,0 +1,19 @@
+Streamlit chatbot multi-source update (March 29, 2026):
+
+- Switched from a single knowledge-source workflow to loading any available SDN Enhanced ZIP and HTS CSV at startup.
+- Built a cached  for each source label instead of one shared index, keeping each dataset's embeddings separate but queryable within the same session.
+- Aggregated the top-k chunks per source for every user question, displaying per-source validation snippets inside one expander and combining them into the chat completion context.
+- Replaced the dual system prompts with a single combined prompt that instructs the assistant to cite chunks by their source label and number; added a fallback message when no context is available.
+- Simplified the UI to show all configured knowledge sources and a universal question placeholder covering both OFAC SDN and U.S. HTS topics.
+
+Prompt/response-structure refinements (March 29, 2026, follow-up):
+
+- Strengthened the combined system prompt so the assistant starts with an explicit Answer: conclusion, calls out missing chunks before offering general guidance, and still ties outputs to the retrieved evidence.
+- Added a dedicated  that spells out an Answer: line plus a Supporting
+
+Chunking and metadata improvements (March 29, 2026, follow-up):
+
+- Split each document into sentence-aware chunks with configurable size/overlap and always prepend a compact metadata header so every snippet self-identifies the entity/row it came from.
+- Stored chunking parameters in the index manifest so cached embeddings refresh when the chunk size/overlap changes, and surfaced defaults (with different values for SDN vs. HTS) through the Streamlit loader.
+- Added citation traceability (March 29, 2026, follow-up):
+- Returned each chunk’s index alongside its text/score so the UI/system prompt can describe exact citations, and surfaced those `(Source <label> | Source <chunk number>)` references within both the validation snippets expander and the instructions passed to the chat completion deployment.
