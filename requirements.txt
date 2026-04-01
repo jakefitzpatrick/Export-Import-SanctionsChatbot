@@ -1,0 +1,5 @@
+streamlit
+openai
+numpy
+# PDF parsing support
+PyPDF2>=3.0.0
