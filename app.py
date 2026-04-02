@@ -1,16 +1,48 @@
 import os
+from datetime import datetime
 from pathlib import Path
+
 from dotenv import load_dotenv
 import openai
-import streamlit as st
 import plotly.graph_objects as go
-from datetime import datetime
-from rag import DEFAULT_EMBEDDING_MODEL, RagIndex
+import streamlit as st
+
+from rag import (
+    DEFAULT_EMBEDDING_MODEL,
+    SOURCE_KIND_PDF,
+    RagIndex,
+    create_document_source,
+)
 
 load_dotenv()
 
-RAG_ARCHIVE = Path("SDN_ENHANCED.ZIP")
 DEFAULT_TOP_K = 3
+DEFAULT_CHUNK_SIZE = 250
+DEFAULT_CHUNK_OVERLAP = 50
+
+CHUNK_CONFIG_BY_KIND = {
+    SOURCE_KIND_PDF: {"chunk_size": 200, "chunk_overlap": 100},
+}
+
+QUESTION_PLACEHOLDER = (
+    "Ask about OFAC SDN Enhanced or U.S. HTS topics (provide enough detail for retrieval):"
+)
+
+COMBINED_SYSTEM_PROMPT = (
+    'You are a compliance assistant that relies purely on the provided PDF. '
+    'Always ground your answers in the retrieved evidence below, cite each chunk with its source label, chunk number, and page number (e.g., "(Source finalCopy_2026HTSRev4.pdf | Source 3 | Page 5)"). '
+    'Prefer exact matches to the user query terms; if any necessary context is missing from the retrieved pages, explicitly flag which pages or sections are unavailable before offering general guidance. '
+    'Do not hallucinate facts; begin every response with "Answer:" followed by a concise conclusion.'
+)
+
+GENERATION_NO_CONTEXT_MESSAGE = (
+    "The retriever did not return any snippets from any source, so be transparent that no direct hits were found and answer based on the documented scope of the datasets."
+)
+
+RESPONSE_STRUCTURE_INSTRUCTION = (
+    'Structure your response in two parts: first a concise "Answer:" line that directly addresses the user question, then a "Supporting Evidence:" section with short bullet(s) referencing the chunk(s) you used. '
+    'Each bullet must end with the citation in the format (Source <label> | Source <chunk number>) so users know exactly which chunk resolved the question.'
+)
 
 COUNTRY_RISK = {
     "Cameroon": {"score": 73.79, "year": 2025},
@@ -25,25 +57,70 @@ COUNTRY_RISK = {
     "India": {"score": 52.3, "year": 2025},
 }
 
-def get_risk_color(score):
+
+def get_risk_color(score: float) -> tuple[str, str]:
     if score >= 75:
         return "#c0392b", "High"
-    elif score >= 45:
+    if score >= 45:
         return "#d35400", "Medium"
-    else:
-        return "#1e8449", "Low"
+    return "#1e8449", "Low"
 
-def _format_reference_sections(chunks):
-    lines = []
-    for i, chunk in enumerate(chunks, 1):
-        lines.append(f"[{i}] {chunk}")
-        lines.append("")
-    return "\n".join(lines)
+
+@st.cache_resource(show_spinner=False)
+def load_rag_index(
+    embedding_model: str,
+    source_kind: str,
+    source_path: str,
+    chunk_size: int = DEFAULT_CHUNK_SIZE,
+    chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
+) -> RagIndex:
+    document_source = create_document_source(source_kind, Path(source_path))
+    index = RagIndex(
+        document_source=document_source,
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+    )
+    index.ensure_index(embedding_model)
+    return index
+
+
+def _format_reference_sections(results: list[dict], source_kind: str, source_label: str) -> str:
+    lines: list[str] = []
+    for idx, item in enumerate(results, start=1):
+        chunk_index = item.get("chunk_index")
+        chunk_number = chunk_index + 1 if chunk_index is not None else idx
+        metadata = item.get("metadata", {}) or {}
+        page = metadata.get("page")
+        page_part = f" | Page {page}" if page else ""
+        citation = f"(Source {source_label} | Source {chunk_number}{page_part})"
+        lines.append(
+            f"{citation}\nScore: {item.get('score', 0):.3f}\n{item.get('chunk', '')}"
+        )
+    return "\n\n".join(lines)
+
+
+def build_generation_messages(contexts: list[tuple[str, str]], question: str) -> list[dict]:
+    messages: list[dict] = [{"role": "system", "content": COMBINED_SYSTEM_PROMPT}]
+    if contexts:
+        for label, context_text in contexts:
+            messages.append(
+                {
+                    "role": "system",
+                    "content": f"Retrieved context from {label}:\n{context_text}",
+                }
+            )
+    else:
+        messages.append({"role": "system", "content": GENERATION_NO_CONTEXT_MESSAGE})
+    messages.append({"role": "system", "content": RESPONSE_STRUCTURE_INSTRUCTION})
+    messages.append({"role": "user", "content": question})
+    return messages
+
 
 def main() -> None:
     st.set_page_config(page_title="ImportInsight AI", layout="wide")
 
-    st.markdown("""
+    st.markdown(
+        """
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
     html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
@@ -52,22 +129,6 @@ def main() -> None:
         padding-top: 0 !important;
     }
     [data-testid="stSidebar"] * { color: #e8edf5 !important; }
-    [data-testid="stSidebar"] .stSelectbox div[data-baseweb="select"] {
-        background-color: #1e3a5f !important;
-        border: 1px solid #2d5a8e !important;
-        border-radius: 8px !important;
-    }
-    [data-testid="stSidebar"] .stSelectbox div[data-baseweb="select"] * {
-        color: #ffffff !important;
-        font-weight: 500 !important;
-    }
-    [data-testid="stSidebar"] .stSelectbox input {
-        color: #ffffff !important;
-    }
-    [data-testid="stSidebar"] [data-baseweb="select"] [data-testid="stMarkdownContainer"] p {
-        color: #ffffff !important;
-    }
-    [data-testid="stSidebar"] hr { border-color: #1e3a5f !important; }
     [data-testid="stSidebar"] h3 {
         color: #a0aec0 !important;
         font-size: 11px !important;
@@ -157,25 +218,30 @@ def main() -> None:
         opacity: 1;
     }
     </style>
-    """, unsafe_allow_html=True)
+    """,
+        unsafe_allow_html=True,
+    )
 
-    # Header
-    st.markdown("""
+    st.markdown(
+        """
         <h1 style='color:#0f1f38; font-weight:700; letter-spacing:-0.5px;'>ImportInsight AI</h1>
-        <p style='color:#64748b; font-size:15px; margin-top:-10px;'>Trade and sanctions intelligence powered by OFAC SDN data.</p>
+        <p style='color:#64748b; font-size:15px; margin-top:-10px;'>Trade and tariff intelligence powered by OFAC RAG sources.</p>
         <hr style='border: 1px solid #e2e8f0; margin-top:16px;'>
-    """, unsafe_allow_html=True)
+    """,
+        unsafe_allow_html=True,
+    )
 
-    # Disclaimer
-    st.markdown("""
+    st.markdown(
+        """
         <div style='background-color:#fef9ec; border-left: 4px solid #f0a500; padding: 10px 16px; border-radius: 6px; margin-bottom: 20px;'>
             <span style='color:#7d5a00; font-size:13px;'>
                 <b>Disclaimer:</b> This tool is for informational purposes only and does not constitute legal advice. Always consult a qualified trade compliance professional.
             </span>
         </div>
-    """, unsafe_allow_html=True)
+    """,
+        unsafe_allow_html=True,
+    )
 
-    # Azure OpenAI setup
     openai.api_type = "azure"
     openai.api_base = os.getenv("AZURE_OPENAI_ENDPOINT")
     openai.api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2025-04-01-preview")
@@ -191,28 +257,44 @@ def main() -> None:
 
     deployment_id = os.getenv("AZURE_OPENAI_DEPLOYMENT_ID")
     if not deployment_id:
-        st.error("Please set AZURE_OPENAI_DEPLOYMENT_ID before running the app.")
+        st.error("Please set AZURE_OPENAI_DEPLOYMENT_ID for the chat completion deployment.")
         return
 
-    if not RAG_ARCHIVE.exists():
-        st.warning("Please drop SDN_ENHANCED.ZIP into the app root so the RAG index can be built.")
+    project_root = Path(__file__).resolve().parent
+    pdf_filename = "finalCopy_2026HTSRev4.pdf"
+    candidates = [project_root / pdf_filename, Path.cwd() / pdf_filename]
+    pdf_path = next((p for p in candidates if p.exists()), None)
+    if not pdf_path:
+        st.error(f"{pdf_filename} not found; place it in {project_root} or the current folder.")
         return
 
-    embedding_deployment = os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT_ID", DEFAULT_EMBEDDING_MODEL)
+    sidebar_sources: list[dict] = [
+        {"label": pdf_path.name, "kind": SOURCE_KIND_PDF, "path": str(pdf_path)}
+    ]
 
-    try:
-        rag_index = RagIndex(RAG_ARCHIVE, embedding_deployment)
-    except Exception as exc:
-        st.error(f"Failed to prepare RAG index: {exc}")
+    if not sidebar_sources:
+        st.error("No knowledge sources were found to build the RAG index.")
         return
 
-    # Sidebar
+    source_labels = [source["label"] for source in sidebar_sources]
+
     with st.sidebar:
         st.image("logo.png", width=150)
         st.markdown("<hr>", unsafe_allow_html=True)
         st.markdown("### Settings")
-        top_k = st.slider("Chunks to consider", 1, 5, DEFAULT_TOP_K)
-        st.caption("Searches SDN entities for semantic matches.")
+        top_k = st.slider("Chunks to consider", 1, 10, DEFAULT_TOP_K)
+        page_filter_input = st.text_input(
+            "Filter pages (comma-separated)",
+            "",
+            help="Restrict results to the numbered pages you care about.",
+        )
+        st.caption(
+            "Searches the selected knowledge sources for semantic matches, then passes the highest scoring chunks to the chat completion."
+        )
+        st.caption(
+            "Temperature is fixed at 1.0 because this deployment currently only supports the default value."
+        )
+        st.caption("Current knowledge sources: " + ", ".join(source_labels))
         st.markdown("<hr>", unsafe_allow_html=True)
 
         st.markdown("### Governance Risk")
@@ -225,47 +307,60 @@ def main() -> None:
         fig = go.Figure(go.Indicator(
             mode="gauge+number",
             value=score,
-            number={'font': {'size': 28, 'color': color}},
+            number={"font": {"size": 28, "color": color}},
             gauge={
-                'axis': {'range': [0, 100], 'tickwidth': 1, 'tickcolor': "#a0aec0", 'tickfont': {'size': 9, 'color': '#a0aec0'}},
-                'bar': {'color': color, 'thickness': 0.25},
-                'bgcolor': "rgba(0,0,0,0)",
-                'borderwidth': 0,
-                'steps': [
-                    {'range': [0, 45], 'color': '#1e8449'},
-                    {'range': [45, 75], 'color': '#d35400'},
-                    {'range': [75, 100], 'color': '#c0392b'},
+                "axis": {"range": [0, 100], "tickwidth": 1, "tickcolor": "#a0aec0", "tickfont": {"size": 9, "color": "#a0aec0"}},
+                "bar": {"color": color, "thickness": 0.25},
+                "bgcolor": "rgba(0,0,0,0)",
+                "borderwidth": 0,
+                "steps": [
+                    {"range": [0, 45], "color": "#1e8449"},
+                    {"range": [45, 75], "color": "#d35400"},
+                    {"range": [75, 100], "color": "#c0392b"},
                 ],
-                'threshold': {
-                    'line': {'color': "white", 'width': 3},
-                    'thickness': 0.8,
-                    'value': score
-                }
+                "threshold": {
+                    "line": {"color": "white", "width": 3},
+                    "thickness": 0.8,
+                    "value": score,
+                },
             },
-            title={'text': f"<b>{level} Risk</b><br><span style='font-size:11px;color:#a0aec0'>{selected_country} · {year}</span>", 'font': {'size': 13, 'color': 'white'}}
+            title={"text": f"<b>{level} Risk</b><br><span style='font-size:11px;color:#a0aec0'>{selected_country} · {year}</span>", "font": {"size": 13, "color": "white"}},
         ))
         fig.update_layout(
-            paper_bgcolor='rgba(0,0,0,0)',
-            plot_bgcolor='rgba(0,0,0,0)',
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
             margin=dict(l=10, r=10, t=60, b=10),
             height=200,
-            font={'color': 'white'}
+            font={"color": "white"},
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
         st.markdown("<hr>", unsafe_allow_html=True)
-        if st.button("Clear Chat", use_container_width=True):
+        if st.button("Clear Chat", width="stretch"):
             st.session_state.messages = []
             st.rerun()
         st.markdown("<hr>", unsafe_allow_html=True)
         st.markdown("### About")
         st.caption("ImportInsight AI helps businesses navigate trade and sanctions regulations using OFAC data.")
 
-    # Chat history
+    try:
+        rag_indexes: dict[str, RagIndex] = {}
+        for source in sidebar_sources:
+            chunk_settings = CHUNK_CONFIG_BY_KIND.get(source["kind"], {})
+            rag_indexes[source["label"]] = load_rag_index(
+                os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT_ID", DEFAULT_EMBEDDING_MODEL),
+                source["kind"],
+                source["path"],
+                chunk_size=chunk_settings.get("chunk_size", DEFAULT_CHUNK_SIZE),
+                chunk_overlap=chunk_settings.get("chunk_overlap", DEFAULT_CHUNK_OVERLAP),
+            )
+    except Exception as exc:
+        st.error(f"Failed to prepare the RAG index: {exc}")
+        return
+
     if "messages" not in st.session_state:
         st.session_state.messages = []
 
-    # Starter pills
     if len(st.session_state.messages) == 0:
         starters = [
             "Can I export software to Russia?",
@@ -275,55 +370,98 @@ def main() -> None:
             "What goods are banned from North Korea?",
             "Are there restrictions on trading with Iran?",
         ]
-        st.markdown("<p style='color:#cbd5e1; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:6px;'>Suggested questions</p>", unsafe_allow_html=True)
+        st.markdown(
+            "<p style='color:#cbd5e1; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:6px;'>Suggested questions</p>",
+            unsafe_allow_html=True,
+        )
         cols = st.columns(2)
         for i, q in enumerate(starters):
             with cols[i % 2]:
-                if st.button(q, key=f"s_{i}", use_container_width=True):
-                    st.session_state.messages.append({"role": "user", "content": q, "time": datetime.now().strftime("%I:%M %p")})
+                if st.button(q, key=f"starter_{i}", width="stretch"):
+                    st.session_state.messages.append(
+                        {"role": "user", "content": q, "time": datetime.now().strftime("%I:%M %p")}
+                    )
                     st.rerun()
         st.markdown("<br>", unsafe_allow_html=True)
 
-    # Display chat bubbles
     for msg in st.session_state.messages:
         timestamp = msg.get("time", "")
         if msg["role"] == "user":
-            st.markdown(f"<div class='bubble-label bubble-label-right'>You</div><div class='bubble-user'>{msg['content']}</div><div class='timestamp timestamp-right'>{timestamp}</div><div class='clearfix'></div>", unsafe_allow_html=True)
+            st.markdown(
+                f"<div class='bubble-label bubble-label-right'>You</div><div class='bubble-user'>{msg['content']}</div><div class='timestamp timestamp-right'>{timestamp}</div><div class='clearfix'></div>",
+                unsafe_allow_html=True,
+            )
         else:
-            st.markdown(f"<div class='bubble-label'>Assistant</div><div class='bubble-bot'>{msg['content']}</div><div class='timestamp'>{timestamp}</div><div class='clearfix'></div>", unsafe_allow_html=True)
+            st.markdown(
+                f"<div class='bubble-label'>Assistant</div><div class='bubble-bot'>{msg['content']}</div><div class='timestamp'>{timestamp}</div><div class='clearfix'></div>",
+                unsafe_allow_html=True,
+            )
 
-    # Input
-    question = st.text_area("Ask about sanctions, trade restrictions, or SDN entities:", height=100, key="prompt_input")
+    question = st.text_area(QUESTION_PLACEHOLDER, height=140, key="prompt_input")
 
-    if st.button("Send", use_container_width=True):
+    if st.button("Send", width="stretch"):
         if not question.strip():
             st.warning("Please enter a question before sending.")
             return
 
-        now = datetime.now().strftime("%I:%M %p")
-        st.session_state.messages.append({"role": "user", "content": question, "time": now})
+        st.session_state.messages.append(
+            {"role": "user", "content": question, "time": datetime.now().strftime("%I:%M %p")}
+        )
 
-        reference_chunks = rag_index.search(question, top_k=top_k)
-        if reference_chunks:
-            context_text = _format_reference_sections(reference_chunks)
+        source_contexts: list[tuple[str, str]] = []
+        previews: list[str] = []
+        page_filters = {
+            int(p.strip()) for p in page_filter_input.split(",") if p.strip().isdigit()
+        }
+
+        for source in sidebar_sources:
+            label = source["label"]
+            index = rag_indexes[label]
+            candidates = index.search(question, top_k=top_k * 2)
+            if page_filters:
+                candidates = [
+                    c for c in candidates if c.get("metadata", {}).get("page") in page_filters
+                ]
+
+            terms = [t.lower() for t in question.split()]
+
+            def lex_score(chunk: dict) -> int:
+                text = chunk.get("chunk", "").lower()
+                return sum(text.count(term) for term in terms)
+
+            candidates.sort(key=lambda c: (lex_score(c), c.get("score", 0)), reverse=True)
+            reference_chunks = candidates[:top_k]
+            if reference_chunks:
+                context_text = _format_reference_sections(reference_chunks, source["kind"], label)
+                source_contexts.append((label, context_text))
+                previews.append(f"{label}:\n{context_text}")
+
+        if source_contexts:
+            with st.expander("Validation snippets from all sources", expanded=True):
+                st.text_area(
+                    "Top matches",
+                    value="\n\n".join(previews),
+                    height=260,
+                    max_chars=None,
+                    key="doc_view",
+                )
         else:
-            context_text = ""
-            st.info("No semantically similar documents were found.")
+            st.info("No semantically similar documents were found in the archive.")
 
-        messages = [{"role": "system", "content": "You answer questions using the OFAC SDN Enhanced data; cite relevant retrieved evidence when available."}]
-        if context_text:
-            messages.append({"role": "system", "content": "Reference data:\n" + context_text})
-        messages.append({"role": "user", "content": question})
+        messages = build_generation_messages(source_contexts, question)
 
-        with st.spinner("Thinking..."):
+        with st.spinner("Sending request to Azure OpenAI chat deployment..."):
             response = openai.chat.completions.create(
                 model=deployment_id,
                 messages=messages,
                 temperature=1.0,
             )
         reply = response.choices[0].message.content
-        st.session_state.messages.append({"role": "assistant", "content": reply, "time": datetime.now().strftime("%I:%M %p")})
+        st.session_state.messages.append(
+            {"role": "assistant", "content": reply, "time": datetime.now().strftime("%I:%M %p")}
+        )
         st.rerun()
+
 
 if __name__ == "__main__":
     main()
