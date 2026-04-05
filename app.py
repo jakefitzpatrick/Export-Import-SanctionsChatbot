@@ -1,3 +1,8 @@
+<<<<<<< Updated upstream
+=======
+"""Streamlit sandbox-aware chatbot that references multiple knowledge sources via RAG."""
+import logging
+>>>>>>> Stashed changes
 import os
 from datetime import datetime
 from pathlib import Path
@@ -65,6 +70,18 @@ def get_risk_color(score: float) -> tuple[str, str]:
         return "#d35400", "Medium"
     return "#1e8449", "Low"
 
+logger = logging.getLogger(__name__)
+
+
+def _configure_logging() -> None:
+    base_level = os.environ.get("LOG_LEVEL", "INFO").upper()
+    logging.basicConfig(level=base_level)
+    rag_logger = logging.getLogger("rag")
+    if os.environ.get("RAG_KEYWORD_DEBUG", "").lower() in {"1", "true", "yes"}:
+        rag_logger.setLevel(logging.DEBUG)
+    else:
+        rag_logger.setLevel(base_level)
+
 
 @st.cache_resource(show_spinner=False)
 def load_rag_index(
@@ -117,6 +134,7 @@ def build_generation_messages(contexts: list[tuple[str, str]], question: str) ->
 
 
 def main() -> None:
+<<<<<<< Updated upstream
     st.set_page_config(page_title="ImportInsight AI", layout="wide")
 
     st.markdown(
@@ -241,6 +259,12 @@ def main() -> None:
     """,
         unsafe_allow_html=True,
     )
+=======
+    st.set_page_config(page_title="Sanctions RAG Assistant", layout="wide")
+    _configure_logging()
+    st.title("Sanctions RAG Assistant")
+    st.caption("Uses OFAC SDN or HTS data as the knowledge source.")
+>>>>>>> Stashed changes
 
     openai.api_type = "azure"
     openai.api_base = os.getenv("AZURE_OPENAI_ENDPOINT")
