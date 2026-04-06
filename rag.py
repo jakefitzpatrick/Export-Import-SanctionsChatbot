@@ -218,9 +218,14 @@ class CsvDocumentSource(DocumentSource):
         }
 
     def iter_records(self) -> Iterable[DocumentRecord]:
-        # Stage 3: per-row HTS code chunking with breadcrumb context
+        """
+        Stage 3: group HTS CSV rows into chunks by top-level headings (Indent == "0").
+        Each group yields a single DocumentRecord combining all rows under that heading.
+        """
         current_heading_id = None
         current_heading_desc = None
+        group_rows: list[tuple[str, dict, str]] = []
+        group_header: str = ""
         with self.csv_path.open("r", encoding="utf-8-sig", newline="") as handle:
             reader = csv.DictReader(handle)
             for row in reader:
@@ -232,13 +237,10 @@ class CsvDocumentSource(DocumentSource):
                 digits = re.sub(r"\D", "", hts)
                 heading_code = digits.zfill(4)[:4] if digits else ""
                 chapter_code = heading_code[:2] if heading_code else ""
-                # update heading context on heading rows (indent blank)
+                # update context when indent == "0"
                 indent = metadata.get("indent", "").strip()
-                if not indent:
-                    current_heading_id = heading_code
-                    current_heading_desc = metadata.get("description", "")
                 # build breadcrumb: Chapter > Heading
-                crumbs = []
+                crumbs: list[str] = []
                 if chapter_code:
                     crumbs.append(f"Chapter {chapter_code}")
                 if current_heading_id:
@@ -247,14 +249,38 @@ class CsvDocumentSource(DocumentSource):
                 # original row header
                 row_header = self._row_header(row, metadata["row_number"])
                 header = f"{breadcrumb} | {row_header}" if breadcrumb else row_header
-                # enrich metadata for retrieval
+                # if this row starts a new top-level group, flush the previous group
+                if indent == "0":
+                    if group_rows:
+                        # combine prior group into one chunk
+                        texts = [text for text, _, _ in group_rows]
+                        first_meta = group_rows[0][1]
+                        yield DocumentRecord(
+                            text="\n".join(texts),
+                            metadata=first_meta,
+                            metadata_header=group_header,
+                        )
+                        group_rows.clear()
+                    # start new group header based on this row
+                    current_heading_id = heading_code
+                    current_heading_desc = metadata.get("description", "")
+                    group_header = header
+                # collect row into current group (even if indent=="0" this row belongs)
                 metadata["breadcrumb"] = breadcrumb
                 metadata["chapter_id"] = chapter_code
                 metadata["heading_id"] = current_heading_id
                 metadata["heading_desc"] = current_heading_desc
-                if not (header or body):
-                    continue
-                yield DocumentRecord(text=body, metadata=metadata, metadata_header=header)
+                if header or body:
+                    group_rows.append((body, metadata, header))
+            # flush last group
+            if group_rows:
+                texts = [text for text, _, _ in group_rows]
+                first_meta = group_rows[0][1]
+                yield DocumentRecord(
+                    text="\n".join(texts),
+                    metadata=first_meta,
+                    metadata_header=group_header,
+                )
 
     @staticmethod
     def _clean_field(value: Optional[str]) -> str:
