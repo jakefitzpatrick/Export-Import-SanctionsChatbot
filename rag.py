@@ -252,16 +252,17 @@ class CsvDocumentSource(DocumentSource):
                 # if this row starts a new top-level group, flush the previous group
                 if indent == "0":
                     if group_rows:
-                        # combine prior group into one chunk
-                        texts = [text for text, _, _ in group_rows]
+                        # flush the previous group as one chunk with its header
+                        texts = [line for line, _, _ in group_rows]
                         first_meta = group_rows[0][1]
+                        chunk_text = "\n".join([group_header] + texts)
                         yield DocumentRecord(
-                            text="\n".join(texts),
+                            text=chunk_text,
                             metadata=first_meta,
                             metadata_header=group_header,
                         )
                         group_rows.clear()
-                    # start new group header based on this row
+                    # start a new group header based on this row
                     current_heading_id = heading_code
                     current_heading_desc = metadata.get("description", "")
                     group_header = header
@@ -272,12 +273,13 @@ class CsvDocumentSource(DocumentSource):
                 metadata["heading_desc"] = current_heading_desc
                 if header or body:
                     group_rows.append((body, metadata, header))
-            # flush last group
+            # flush final group with its header
             if group_rows:
-                texts = [text for text, _, _ in group_rows]
+                texts = [line for line, _, _ in group_rows]
                 first_meta = group_rows[0][1]
+                chunk_text = "\n".join([group_header] + texts)
                 yield DocumentRecord(
-                    text="\n".join(texts),
+                    text=chunk_text,
                     metadata=first_meta,
                     metadata_header=group_header,
                 )
