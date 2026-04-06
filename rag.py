@@ -14,7 +14,7 @@ import numpy as np
 import time
 from PyPDF2 import PdfReader
 import openai
-import openai.error
+from azure.core.exceptions import HttpResponseError
 import pdfplumber
 import xml.etree.ElementTree as ET
 
@@ -549,9 +549,13 @@ class RagIndex:
         while True:
             try:
                 return self._embed_batch(texts)
-            except openai.error.RateLimitError:
-                time.sleep(wait)
-                wait = min(wait * 2, 60)
+            except HttpResponseError as err:
+                # retry only on 429 Rate Limit
+                if getattr(err, "status_code", None) == 429:
+                    time.sleep(wait)
+                    wait = min(wait * 2, 60)
+                    continue
+                raise
 
     def search(self, query: str, top_k: int = 3) -> List[dict]:
         if not query or not self._loaded:
