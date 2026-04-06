@@ -1,8 +1,5 @@
-<<<<<<< Updated upstream
-=======
 """Streamlit sandbox-aware chatbot that references multiple knowledge sources via RAG."""
 import logging
->>>>>>> Stashed changes
 import os
 from datetime import datetime
 from pathlib import Path
@@ -15,9 +12,13 @@ import streamlit as st
 from rag import (
     DEFAULT_EMBEDDING_MODEL,
     SOURCE_KIND_PDF,
+    SOURCE_KIND_HTS,
     RagIndex,
     create_document_source,
+    find_latest_hts_csv,
 )
+# Maximum characters to include for long notes to avoid exceeding context window
+MAX_NOTE_CHARS = int(os.getenv("MAX_NOTE_CHARS", "4000"))
 
 load_dotenv()
 
@@ -27,6 +28,7 @@ DEFAULT_CHUNK_OVERLAP = 50
 
 CHUNK_CONFIG_BY_KIND = {
     SOURCE_KIND_PDF: {"chunk_size": 200, "chunk_overlap": 100},
+    SOURCE_KIND_HTS: {"chunk_size": 50, "chunk_overlap": 0},
 }
 
 QUESTION_PLACEHOLDER = (
@@ -110,8 +112,10 @@ def _format_reference_sections(results: list[dict], source_kind: str, source_lab
         page = metadata.get("page")
         page_part = f" | Page {page}" if page else ""
         citation = f"(Source {source_label} | Source {chunk_number}{page_part})"
+        # support both "chunk" and legacy "text" keys
+        text_content = item.get("chunk") or item.get("text", "")
         lines.append(
-            f"{citation}\nScore: {item.get('score', 0):.3f}\n{item.get('chunk', '')}"
+            f"{citation}\nScore: {item.get('score', 0):.3f}\n{text_content}"
         )
     return "\n\n".join(lines)
 
@@ -134,7 +138,6 @@ def build_generation_messages(contexts: list[tuple[str, str]], question: str) ->
 
 
 def main() -> None:
-<<<<<<< Updated upstream
     st.set_page_config(page_title="ImportInsight AI", layout="wide")
 
     st.markdown(
@@ -259,12 +262,6 @@ def main() -> None:
     """,
         unsafe_allow_html=True,
     )
-=======
-    st.set_page_config(page_title="Sanctions RAG Assistant", layout="wide")
-    _configure_logging()
-    st.title("Sanctions RAG Assistant")
-    st.caption("Uses OFAC SDN or HTS data as the knowledge source.")
->>>>>>> Stashed changes
 
     openai.api_type = "azure"
     openai.api_base = os.getenv("AZURE_OPENAI_ENDPOINT")
@@ -285,6 +282,7 @@ def main() -> None:
         return
 
     project_root = Path(__file__).resolve().parent
+    # PDF source
     pdf_filename = "finalCopy_2026HTSRev4.pdf"
     candidates = [project_root / pdf_filename, Path.cwd() / pdf_filename]
     pdf_path = next((p for p in candidates if p.exists()), None)
@@ -295,6 +293,12 @@ def main() -> None:
     sidebar_sources: list[dict] = [
         {"label": pdf_path.name, "kind": SOURCE_KIND_PDF, "path": str(pdf_path)}
     ]
+    # CSV HTS source (yields one chunk per HTS row)
+    latest_hts = find_latest_hts_csv(project_root)
+    if latest_hts:
+        sidebar_sources.append(
+            {"label": latest_hts.name, "kind": SOURCE_KIND_HTS, "path": str(latest_hts)}
+        )
 
     if not sidebar_sources:
         st.error("No knowledge sources were found to build the RAG index.")
@@ -369,6 +373,7 @@ def main() -> None:
 
     try:
         rag_indexes: dict[str, RagIndex] = {}
+        reference_chunks_hts: list[dict] = []
         for source in sidebar_sources:
             chunk_settings = CHUNK_CONFIG_BY_KIND.get(source["kind"], {})
             rag_indexes[source["label"]] = load_rag_index(
@@ -455,10 +460,71 @@ def main() -> None:
 
             candidates.sort(key=lambda c: (lex_score(c), c.get("score", 0)), reverse=True)
             reference_chunks = candidates[:top_k]
+            # track HTS hits for parent-child retrieval
+            if source["kind"] == SOURCE_KIND_HTS:
+                reference_chunks_hts = reference_chunks
             if reference_chunks:
                 context_text = _format_reference_sections(reference_chunks, source["kind"], label)
                 source_contexts.append((label, context_text))
                 previews.append(f"{label}:\n{context_text}")
+
+        # Stage 4: Parent-Child Retrieval (chapter & section notes + GRIs)
+        parent_chunks: list[dict] = []
+        # identify HTS and PDF labels
+        hts_label = next((s["label"] for s in sidebar_sources if s["kind"] == SOURCE_KIND_HTS), None)
+        pdf_label = next((s["label"] for s in sidebar_sources if s["kind"] == SOURCE_KIND_PDF), None)
+        if hts_label and pdf_label:
+            # Stage 4a: unique numeric chapters from HTS hits (normalize leading zeros)
+            chap_ids = {
+                int(c["metadata"].get("chapter_id", -1)) for c in reference_chunks_hts
+            }
+            chap_ids.discard(-1)
+            pdf_index = rag_indexes[pdf_label]
+            seen_sections = set()
+            # fetch chapter and section notes once per chapter
+            for chap in sorted(chap_ids):
+                chap_notes = [
+                    chunk
+                    for chunk in pdf_index._chunks
+                    if chunk["metadata"].get("note_type") == "chapter"
+                    and int(chunk["metadata"].get("chapter", 0)) == chap
+                ]
+                # truncate long notes
+                for note in chap_notes:
+                    # handle PDF chunks which may be under "text" instead of "chunk"
+                    key = "chunk" if "chunk" in note else "text"
+                    if len(note[key]) > MAX_NOTE_CHARS:
+                        note[key] = note[key][:MAX_NOTE_CHARS] + " ...[truncated]"
+                parent_chunks.extend(chap_notes)
+                # fetch section notes for this chapter
+                if chap_notes:
+                    sec_id = chap_notes[0]["metadata"].get("section")
+                    if sec_id and sec_id not in seen_sections:
+                        sec_notes = [
+                            chunk
+                            for chunk in pdf_index._chunks
+                            if chunk["metadata"].get("note_type") == "section"
+                            and chunk["metadata"].get("section") == sec_id
+                        ]
+                        for note in sec_notes:
+                            key = "chunk" if "chunk" in note else "text"
+                            if len(note[key]) > MAX_NOTE_CHARS:
+                                note[key] = note[key][:MAX_NOTE_CHARS] + " ...[truncated]"
+                        parent_chunks.extend(sec_notes)
+                        seen_sections.add(sec_id)
+            # include General Rules of Interpretation (general notes) once
+            general_notes = [
+                chunk for chunk in pdf_index._chunks if chunk["metadata"].get("note_type") == "general"
+            ]
+            for note in general_notes:
+                key = "chunk" if "chunk" in note else "text"
+                if len(note[key]) > MAX_NOTE_CHARS:
+                    note[key] = note[key][:MAX_NOTE_CHARS] + " ...[truncated]"
+            parent_chunks.extend(general_notes)
+        # prepend parent contexts once
+        if parent_chunks:
+            parent_ctx = _format_reference_sections(parent_chunks, SOURCE_KIND_PDF, pdf_label)
+            source_contexts.insert(0, (f"{pdf_label}-notes", parent_ctx))
 
         if source_contexts:
             with st.expander("Validation snippets from all sources", expanded=True):
