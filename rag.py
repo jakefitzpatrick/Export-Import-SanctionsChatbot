@@ -224,6 +224,8 @@ class CsvDocumentSource(DocumentSource):
         """
         current_heading_id = None
         current_heading_desc = None
+        # context stack for category headers by indent level
+        category_ctx: dict[int, str] = {}
         group_rows: list[tuple[str, dict, str]] = []
         group_header: str = ""
         with self.csv_path.open("r", encoding="utf-8-sig", newline="") as handle:
@@ -231,7 +233,28 @@ class CsvDocumentSource(DocumentSource):
             for row in reader:
                 metadata = self._row_to_metadata(row)
                 metadata["row_number"] = reader.line_num
-                body = self._row_body(row)
+                # raw row description
+                desc = self._row_body(row)
+                # indent level (0 or numeric)
+                indent_str = metadata.get("indent", "").strip()
+                indent = int(indent_str) if indent_str.isdigit() else None
+                # HTS number present?
+                hts = metadata.get("hts_number", "")
+                # category header rows: no hts_number but have indent
+                if not hts and indent:
+                    # store category description and clear deeper levels
+                    category_ctx[indent] = desc
+                    for lvl in list(category_ctx):
+                        if lvl > indent:
+                            category_ctx.pop(lvl, None)
+                    # skip category headers in chunk grouping
+                    continue
+                # build full description by stacking category headers
+                if indent and category_ctx:
+                    prefix = " > ".join(category_ctx[l] for l in sorted(category_ctx) if l < indent)
+                    body = f"{prefix} > {desc}" if prefix else desc
+                else:
+                    body = desc
                 # compute HTS codes
                 hts = metadata.get("hts_number", "")
                 digits = re.sub(r"\D", "", hts)
@@ -250,7 +273,7 @@ class CsvDocumentSource(DocumentSource):
                 row_header = self._row_header(row, metadata["row_number"])
                 header = f"{breadcrumb} | {row_header}" if breadcrumb else row_header
                 # if this row starts a new top-level group, flush the previous group
-                if indent == "0":
+                if indent == 0:
                     if group_rows:
                         # flush the previous group as one chunk with its header
                         texts = [line for line, _, _ in group_rows]

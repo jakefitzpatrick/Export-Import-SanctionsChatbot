@@ -40,6 +40,8 @@ COMBINED_SYSTEM_PROMPT = """
 You are a compliance assistant that relies purely on the provided HTS CSV data.
 Always ground your answers in the retrieved evidence below and cite each chunk with its source label and chunk number (e.g., "(Source hts_2026_revision_4_csv.csv | Source 2)").
 
+Tariff Override Rule: if any rate column (General, Special, Column 2, Quota or Additional Duties) provides an explicit tariff rate or annotation, assume no additional tariff applies beyond that specified.
+
 The CSV columns are:
 - HTS Number
 - Indent
