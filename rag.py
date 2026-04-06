@@ -561,10 +561,16 @@ class RagIndex:
     def _build_index(self) -> None:
         records: List[dict] = []
         for record in self.document_source.iter_records():
-            for idx, chunk_text in enumerate(self._chunk_text(record)):
+            # For HTS CSV source, treat each grouped record as a single chunk
+            if self.document_source.kind == SOURCE_KIND_HTS:
                 chunk_metadata = dict(record.metadata or {})
-                chunk_metadata["chunk_index"] = idx
-                records.append({"text": chunk_text, "metadata": chunk_metadata})
+                chunk_metadata["chunk_index"] = 0
+                records.append({"text": record.text, "metadata": chunk_metadata})
+            else:
+                for idx, chunk_text in enumerate(self._chunk_text(record)):
+                    chunk_metadata = dict(record.metadata or {})
+                    chunk_metadata["chunk_index"] = idx
+                    records.append({"text": chunk_text, "metadata": chunk_metadata})
         if not records:
             raise RuntimeError("No document chunks found while building RAG index")
         embeddings = self._embed_batch([record["text"] for record in records])
