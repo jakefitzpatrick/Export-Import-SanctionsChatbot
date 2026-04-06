@@ -282,23 +282,15 @@ def main() -> None:
         return
 
     project_root = Path(__file__).resolve().parent
-    # PDF source
-    pdf_filename = "finalCopy_2026HTSRev4.pdf"
-    candidates = [project_root / pdf_filename, Path.cwd() / pdf_filename]
-    pdf_path = next((p for p in candidates if p.exists()), None)
-    if not pdf_path:
-        st.error(f"{pdf_filename} not found; place it in {project_root} or the current folder.")
+    # Use only CSV HTS source
+    latest_hts = find_latest_hts_csv(project_root)
+    if not latest_hts:
+        st.error("No HTS CSV file found; please place hts_2026_revision_4_csv.csv in the project folder.")
         return
 
     sidebar_sources: list[dict] = [
-        {"label": pdf_path.name, "kind": SOURCE_KIND_PDF, "path": str(pdf_path)}
+        {"label": latest_hts.name, "kind": SOURCE_KIND_HTS, "path": str(latest_hts)}
     ]
-    # CSV HTS source (yields one chunk per HTS row)
-    latest_hts = find_latest_hts_csv(project_root)
-    if latest_hts:
-        sidebar_sources.append(
-            {"label": latest_hts.name, "kind": SOURCE_KIND_HTS, "path": str(latest_hts)}
-        )
 
     if not sidebar_sources:
         st.error("No knowledge sources were found to build the RAG index.")
