@@ -11,6 +11,7 @@ from typing import Iterable, List, Optional, Tuple, Union
 from zipfile import ZipFile
 
 import numpy as np
+import time
 from PyPDF2 import PdfReader
 import openai
 import pdfplumber
@@ -539,6 +540,18 @@ class RagIndex:
         else:
             self._build_index()
 
+    def _embed_with_retry(self, texts: list[str]) -> np.ndarray:
+        """
+        Wrapper for embedding calls that retries on rate limits with exponential backoff.
+        """
+        wait = 1
+        while True:
+            try:
+                return self._embed_batch(texts)
+            except openai.error.RateLimitError:
+                time.sleep(wait)
+                wait = min(wait * 2, 60)
+
     def search(self, query: str, top_k: int = 3) -> List[dict]:
         if not query or not self._loaded:
             return []
@@ -598,7 +611,7 @@ class RagIndex:
                     records.append({"text": chunk_text, "metadata": chunk_metadata})
         if not records:
             raise RuntimeError("No document chunks found while building RAG index")
-        embeddings = self._embed_batch([record["text"] for record in records])
+        embeddings = self._embed_with_retry([record["text"] for record in records])
         self._chunks = records
         self._embeddings = embeddings
         self._normalized_embeddings = self._normalize_vectors(embeddings)
