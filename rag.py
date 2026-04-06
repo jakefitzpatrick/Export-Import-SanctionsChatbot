@@ -14,6 +14,7 @@ import numpy as np
 import time
 from PyPDF2 import PdfReader
 import openai
+import openai.error
 import pdfplumber
 import xml.etree.ElementTree as ET
 
