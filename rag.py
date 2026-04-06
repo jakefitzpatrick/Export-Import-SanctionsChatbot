@@ -262,10 +262,10 @@ class CsvDocumentSource(DocumentSource):
                             metadata_header=group_header,
                         )
                         group_rows.clear()
-                    # start a new group header based on this row
+                    # start a new group header based on this row's HTS row_header (omit crumb prefix)
                     current_heading_id = heading_code
                     current_heading_desc = metadata.get("description", "")
-                    group_header = header
+                    group_header = row_header
                 # collect row into current group (even if indent=="0" this row belongs)
                 metadata["breadcrumb"] = breadcrumb
                 metadata["chapter_id"] = chapter_code
