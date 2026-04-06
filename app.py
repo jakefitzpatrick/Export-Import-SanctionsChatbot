@@ -17,6 +17,7 @@ from rag import (
     create_document_source,
     find_latest_hts_csv,
 )
+import pandas as pd
 # Maximum characters to include for long notes to avoid exceeding context window
 MAX_NOTE_CHARS = int(os.getenv("MAX_NOTE_CHARS", "4000"))
 
@@ -418,7 +419,20 @@ def main() -> None:
                 unsafe_allow_html=True,
             )
 
-    question = st.text_area(QUESTION_PLACEHOLDER, height=140, key="prompt_input")
+    # HTS code dropdown: select a top-level HTS code to auto-fill the query
+    try:
+        hts_df = pd.read_csv(sidebar_sources[0]["path"], dtype=str)
+        top_codes = hts_df[hts_df["Indent"].astype(str) == "0"]
+        code_options = top_codes.apply(
+            lambda r: f'{r["HTS Number"]} - {r["Description"]}', axis=1
+        ).tolist()
+    except Exception:
+        code_options = []
+    selected_hts = st.selectbox("Select HTS Code", [""] + code_options)
+    if selected_hts:
+        question = selected_hts.split(" - ", 1)[0]
+    else:
+        question = st.text_area(QUESTION_PLACEHOLDER, height=140, key="prompt_input")
 
     if st.button("Send", width="stretch"):
         if not question.strip():
