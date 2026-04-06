@@ -13,6 +13,7 @@ from zipfile import ZipFile
 import numpy as np
 from PyPDF2 import PdfReader
 import openai
+import pdfplumber
 import xml.etree.ElementTree as ET
 
 CACHE_BASE = Path(".rag_cache")
@@ -217,13 +218,40 @@ class CsvDocumentSource(DocumentSource):
         }
 
     def iter_records(self) -> Iterable[DocumentRecord]:
+        # Stage 3: per-row HTS code chunking with breadcrumb context
+        current_heading_id = None
+        current_heading_desc = None
         with self.csv_path.open("r", encoding="utf-8-sig", newline="") as handle:
             reader = csv.DictReader(handle)
             for row in reader:
                 metadata = self._row_to_metadata(row)
                 metadata["row_number"] = reader.line_num
-                header = self._row_header(row, metadata["row_number"])
                 body = self._row_body(row)
+                # compute HTS codes
+                hts = metadata.get("hts_number", "")
+                digits = re.sub(r"\D", "", hts)
+                heading_code = digits.zfill(4)[:4] if digits else ""
+                chapter_code = heading_code[:2] if heading_code else ""
+                # update heading context on heading rows (indent blank)
+                indent = metadata.get("indent", "").strip()
+                if not indent:
+                    current_heading_id = heading_code
+                    current_heading_desc = metadata.get("description", "")
+                # build breadcrumb: Chapter > Heading
+                crumbs = []
+                if chapter_code:
+                    crumbs.append(f"Chapter {chapter_code}")
+                if current_heading_id:
+                    crumbs.append(f"Heading {current_heading_id} ({current_heading_desc})")
+                breadcrumb = " > ".join(crumbs)
+                # original row header
+                row_header = self._row_header(row, metadata["row_number"])
+                header = f"{breadcrumb} | {row_header}" if breadcrumb else row_header
+                # enrich metadata for retrieval
+                metadata["breadcrumb"] = breadcrumb
+                metadata["chapter_id"] = chapter_code
+                metadata["heading_id"] = current_heading_id
+                metadata["heading_desc"] = current_heading_desc
                 if not (header or body):
                     continue
                 yield DocumentRecord(text=body, metadata=metadata, metadata_header=header)
@@ -297,11 +325,132 @@ class PdfDocumentSource(DocumentSource):
         }
 
     def iter_records(self) -> Iterable[DocumentRecord]:
+        # Load all pages' text for hierarchical note extraction
         reader = PdfReader(self.pdf_path)
-        for page_num, page in enumerate(reader.pages, start=1):
-            text = page.extract_text() or ""
-            header = f"Page {page_num}"
-            yield DocumentRecord(text=text, metadata={"page": page_num}, metadata_header=header)
+        pages = [page.extract_text() or "" for page in reader.pages]
+        full_text = "\n".join(pages)
+
+        # Stage 1a: Manual PDF slice-based capture for Section I (page 909) and Chapter 3 (pages 935–971)
+        with pdfplumber.open(self.pdf_path) as pp_pdf:
+            # Section I notes start on 1-based page 909
+            sec_page_index = 908
+            try:
+                pg = pp_pdf.pages[sec_page_index]
+                sec_text = pg.extract_text() or ""
+                if sec_text.strip():
+                    yield DocumentRecord(
+                        text=sec_text.strip(),
+                        metadata={"note_type": "parent_pdf_note", "source_page": sec_page_index + 1},
+                        metadata_header="Section I Notes",
+                    )
+            except IndexError:
+                pass
+            # Chapter 3 notes span 1-based pages 935–971
+            for page_idx in range(934, 971):
+                try:
+                    pg = pp_pdf.pages[page_idx]
+                    chap_text = pg.extract_text() or ""
+                except IndexError:
+                    break
+                if chap_text.strip():
+                    yield DocumentRecord(
+                        text=chap_text.strip(),
+                        metadata={"note_type": "parent_pdf_note", "source_page": page_idx + 1},
+                        metadata_header="Chapter 3 Notes",
+                    )
+
+        # Stage 1b: Extract General, Section, and Chapter Notes via line-by-line scan
+        lines = full_text.splitlines()
+        n = len(lines)
+        # General Notes: from first "General Notes" until first "SECTION"
+        for idx, line in enumerate(lines):
+            if line.strip().lower().startswith("general notes"):
+                start = idx
+                idx += 1
+                while idx < n and not lines[idx].strip().upper().startswith("SECTION"):
+                    idx += 1
+                gen_block = "\n".join(lines[start:idx])
+                yield DocumentRecord(
+                    text=gen_block.strip(),
+                    metadata={"note_type": "general"},
+                    metadata_header="General Notes",
+                )
+                break
+        # Section Notes: header, title, then lines until next Chapter or SECTION
+        i = 0
+        while i < n:
+            sec_match = re.match(r"SECTION\s+([IVXLCDM]+)", lines[i].strip(), re.IGNORECASE)
+            if sec_match and i + 2 < n:
+                sec_num = sec_match.group(1)
+                title = lines[i + 1].strip()
+                j = i + 2
+                while j < n and "section notes" not in lines[j].lower():
+                    j += 1
+                j += 1
+                start = j
+                while j < n and not re.match(r"(Chapter\s+|SECTION\s+)", lines[j], re.IGNORECASE):
+                    j += 1
+                sec_block = "\n".join(lines[start:j])
+                yield DocumentRecord(
+                    text=sec_block.strip(),
+                    metadata={"note_type": "section", "section": sec_num},
+                    metadata_header=f"Section {sec_num}: {title}",
+                )
+                i = j
+            else:
+                i += 1
+        # Chapter Notes: header, title, then lines until next Chapter or SECTION
+        i = 0
+        while i < n:
+            chap_match = re.match(r"Chapter\s+(\d+)", lines[i].strip(), re.IGNORECASE)
+            if chap_match and i + 2 < n:
+                chap_num = chap_match.group(1)
+                title = lines[i + 1].strip()
+                j = i + 2
+                while j < n and lines[j].strip().lower() != "notes":
+                    j += 1
+                j += 1
+                start = j
+                while j < n and not re.match(r"(Chapter\s+|SECTION\s+)", lines[j], re.IGNORECASE):
+                    j += 1
+                chap_block = "\n".join(lines[start:j])
+                yield DocumentRecord(
+                    text=chap_block.strip(),
+                    metadata={"note_type": "chapter", "chapter": chap_num},
+                    metadata_header=f"Chapter {chap_num}: {title}",
+                )
+                i = j
+            else:
+                i += 1
+
+        # Stage 2: reconstruct Section and Chapter context per page, yielding breadcrumb headers
+        sec_head = re.compile(r"SECTION\s+([IVXLCDM]+)\s+([^\n]+)", re.IGNORECASE)
+        chap_head = re.compile(r"Chapter\s+(\d+)\s+([^\n]+)", re.IGNORECASE)
+        current_section = None
+        current_chapter = None
+        section_title = ""
+        chapter_title = ""
+        for page_num, page_text in enumerate(pages, start=1):
+            # update context if headings appear on this page
+            m_sec = sec_head.search(page_text)
+            if m_sec:
+                current_section, section_title = m_sec.group(1), m_sec.group(2).strip()
+            m_chap = chap_head.search(page_text)
+            if m_chap:
+                current_chapter, chapter_title = m_chap.group(1), m_chap.group(2).strip()
+            # build breadcrumb header
+            crumbs = []
+            if current_section:
+                crumbs.append(f"Section {current_section}: {section_title}")
+            if current_chapter:
+                crumbs.append(f"Chapter {current_chapter}: {chapter_title}")
+            header = f"{' > '.join(crumbs)}\nPage {page_num}" if crumbs else f"Page {page_num}"
+            metadata = {"page": page_num}
+            if current_section:
+                metadata["section"] = current_section
+            if current_chapter:
+                metadata["chapter"] = current_chapter
+            yield DocumentRecord(text=page_text.strip(), metadata=metadata, metadata_header=header)
 
 
 class RagIndex:
