@@ -16,6 +16,9 @@ from rag import (
 
 load_dotenv()
 
+from logger import setup_logger
+logger = setup_logger(__name__)
+
 DEFAULT_TOP_K = 3
 DEFAULT_CHUNK_SIZE = 250
 DEFAULT_CHUNK_OVERLAP = 50
@@ -74,6 +77,10 @@ def load_rag_index(
     chunk_size: int = DEFAULT_CHUNK_SIZE,
     chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
 ) -> RagIndex:
+    logger.debug(
+        "load_rag_index model=%s kind=%s path=%s chunk_size=%d chunk_overlap=%d",
+        embedding_model, source_kind, source_path, chunk_size, chunk_overlap,
+    )
     document_source = create_document_source(source_kind, Path(source_path))
     index = RagIndex(
         document_source=document_source,
@@ -81,6 +88,7 @@ def load_rag_index(
         chunk_overlap=chunk_overlap,
     )
     index.ensure_index(embedding_model)
+    logger.info("RAG index built for source %s", source_kind)
     return index
 
 
@@ -117,6 +125,7 @@ def build_generation_messages(contexts: list[tuple[str, str]], question: str) ->
 
 
 def main() -> None:
+    logger.info("Starting chatbot Streamlit app")
     st.set_page_config(page_title="ImportInsight AI", layout="wide")
 
     st.markdown(
@@ -417,11 +426,19 @@ def main() -> None:
         for source in sidebar_sources:
             label = source["label"]
             index = rag_indexes[label]
+            logger.debug(
+                "Searching source %s for question (len=%d) with page filters %s",
+                label,
+                len(question),
+                page_filters or None,
+            )
             candidates = index.search(question, top_k=top_k * 2)
+            logger.debug("Source %s returned %d preliminary candidates", label, len(candidates))
             if page_filters:
                 candidates = [
                     c for c in candidates if c.get("metadata", {}).get("page") in page_filters
                 ]
+                logger.debug("Source %s candidates after page filter: %d", label, len(candidates))
 
             terms = [t.lower() for t in question.split()]
 
@@ -430,7 +447,22 @@ def main() -> None:
                 return sum(text.count(term) for term in terms)
 
             candidates.sort(key=lambda c: (lex_score(c), c.get("score", 0)), reverse=True)
+            logger.debug("Source %s candidates sorted; top score=%s", label, candidates[0].get("score") if candidates else None)
             reference_chunks = candidates[:top_k]
+            if reference_chunks:
+                preview_items = [
+                    {
+                        "chunk_index": chunk.get("chunk_index"),
+                        "score": chunk.get("score"),
+                        "lex_score": lex_score(chunk),
+                    }
+                    for chunk in reference_chunks[:3]
+                ]
+                logger.debug(
+                    "Source %s reference chunks: %s",
+                    label,
+                    preview_items,
+                )
             if reference_chunks:
                 context_text = _format_reference_sections(reference_chunks, source["kind"], label)
                 source_contexts.append((label, context_text))
@@ -449,6 +481,11 @@ def main() -> None:
             st.info("No semantically similar documents were found in the archive.")
 
         messages = build_generation_messages(source_contexts, question)
+        logger.debug(
+            "Prepared generation messages: total=%d with %d contexts",
+            len(messages),
+            len(source_contexts),
+        )
 
         with st.spinner("Sending request to Azure OpenAI chat deployment..."):
             response = openai.chat.completions.create(
@@ -457,6 +494,7 @@ def main() -> None:
                 temperature=1.0,
             )
         reply = response.choices[0].message.content
+        logger.debug("Received completion reply (chars=%d)", len(reply))
         st.session_state.messages.append(
             {"role": "assistant", "content": reply, "time": datetime.now().strftime("%I:%M %p")}
         )

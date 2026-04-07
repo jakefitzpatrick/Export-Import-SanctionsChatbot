@@ -15,6 +15,9 @@ from PyPDF2 import PdfReader
 import openai
 import xml.etree.ElementTree as ET
 
+from logger import setup_logger
+logger = setup_logger(__name__)
+
 CACHE_BASE = Path(".rag_cache")
 CHUNKS_FILENAME = "chunks.jsonl"
 EMBEDDINGS_FILENAME = "embeddings.npy"
@@ -45,13 +48,16 @@ def find_latest_hts_csv(root: Union[str, Path] = Path(".")) -> Optional[Path]:
     directory = Path(root)
     candidates = [p for p in directory.glob(HTS_FILE_PATTERN) if p.is_file()]
     if not candidates:
+        logger.warning("No HTS CSV candidates found in %s", directory)
         return None
 
     def _score(path: Path) -> Tuple[int, float]:
         revision = _extract_revision_from_name(path.name) or 0
         return revision, path.stat().st_mtime
 
-    return max(candidates, key=_score)
+    selected = max(candidates, key=_score)
+    logger.info("find_latest_hts_csv selected %s", selected)
+    return selected
 
 
 @dataclass
@@ -83,6 +89,7 @@ class DocumentSource(ABC):
 
 
 def create_document_source(kind: str, path: Union[str, Path]) -> DocumentSource:
+    logger.debug("create_document_source(kind=%s, path=%s)", kind, path)
     if kind == SOURCE_KIND_SDN:
         return XmlZipDocumentSource(path)
     if kind == SOURCE_KIND_HTS:
@@ -334,7 +341,16 @@ class RagIndex:
 
     def ensure_index(self, embedding_model: str = DEFAULT_EMBEDDING_MODEL) -> None:
         self.embedding_model = embedding_model
-        if self._is_cache_valid():
+        cache_valid = self._is_cache_valid()
+        logger.debug(
+            "ensure_index: cache_valid=%s cache_dir=%s model=%s chunk_size=%d chunk_overlap=%d",
+            cache_valid,
+            self.cache_dir,
+            embedding_model,
+            self.chunk_size,
+            self.chunk_overlap,
+        )
+        if cache_valid:
             self._load_cache()
         else:
             self._build_index()
@@ -349,6 +365,13 @@ class RagIndex:
         if scores.size == 0:
             return []
         order = np.argsort(scores)[::-1][:top_k]
+        logger.debug(
+            "search: query=%s top_k=%d matches=%d scores=%s",
+            query if len(query) < 120 else query[:120] + "...",
+            top_k,
+            scores.size,
+            [float(scores[idx]) for idx in order],
+        )
         return [
             {
                 "chunk": self._chunks[idx]["text"],
@@ -392,6 +415,13 @@ class RagIndex:
                 records.append({"text": chunk_text, "metadata": chunk_metadata})
         if not records:
             raise RuntimeError("No document chunks found while building RAG index")
+        logger.debug(
+            "Building index: %d chunks from source %s (chunk_size=%d, chunk_overlap=%d)",
+            len(records),
+            self.document_source.cache_key,
+            self.chunk_size,
+            self.chunk_overlap,
+        )
         embeddings = self._embed_batch([record["text"] for record in records])
         self._chunks = records
         self._embeddings = embeddings
@@ -477,9 +507,22 @@ class RagIndex:
     def _embed_batch(self, texts: List[str]) -> np.ndarray:
         if self.embedding_model is None:
             raise ValueError("Embedding model must be set before calling _embed_batch")
+        total_texts = len(texts)
+        logger.debug(
+            "Embedding batch: %d texts using %s (batch_size=%d)",
+            total_texts,
+            self.embedding_model,
+            self.batch_size,
+        )
         embeddings: List[np.ndarray] = []
         for start in range(0, len(texts), self.batch_size):
             batch = texts[start : start + self.batch_size]
+            logger.debug(
+                "Embedding batch slice %d-%d (size=%d)",
+                start,
+                start + len(batch),
+                len(batch),
+            )
             response = openai.embeddings.create(model=self.embedding_model, input=batch)
             items = getattr(response, "data", None) or response.get("data", [])
             embeddings.extend(

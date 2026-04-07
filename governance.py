@@ -1,5 +1,8 @@
 """Simple governance risk helper using the V-Dem liberal democracy score."""
 
+from logger import setup_logger
+logger = setup_logger(__name__)
+
 def calculate_governance_risk(vdem_score: float) -> tuple[float, str]:
     """Convert a V-Dem Liberal Democracy score into a 0-100 risk metric.
 
@@ -30,6 +33,4 @@ if __name__ == "__main__":
     sample_country = "Freedonia"
     sample_vdem = 0.42  # Example V-Dem liberal democracy index for the country.
     score, label = calculate_governance_risk(sample_vdem)
-    print(
-        f"{sample_country}: v2x_libdem={sample_vdem} -> governance risk {score:.1f} ({label})"
-    )
+    logger.info(f"{sample_country}: v2x_libdem={sample_vdem} -> governance risk {score:.1f} ({label})")

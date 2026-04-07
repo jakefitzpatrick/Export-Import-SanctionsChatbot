@@ -8,6 +8,9 @@ from pathlib import Path
 
 import pandas as pd
 
+from logger import setup_logger
+logger = setup_logger(__name__)
+
 # ✅ FIXED FILE PATH
 INPUT_PATH = Path("data/vdem_risk_subset_CLEANED.csv")
 OUTPUT_PATH = Path("vdem_risk_scored.csv")
@@ -87,19 +90,15 @@ def main() -> None:
     # Save full dataset
     df.to_csv(OUTPUT_PATH, index=False)
 
-    # Print preview
+    # Log preview of results and summary statistics
     preview_columns = [id_col, "year", "risk_score", "risk_level"]
-    print(df.loc[:, preview_columns].head(10).to_string(index=False))
+    logger.info("Top risk entries:\n%s", df.loc[:, preview_columns].head(10).to_string(index=False))
+    logger.info("Risk score summary:\n%s", df["risk_score"].describe().to_string())
 
-    print("\nRisk score summary:")
-    print(df["risk_score"].describe().to_string())
-
-    # Print explanation for your project write-up
-    print(
-        "\nNormalization formula used:\n"
-        "risk = ((max_value - observed_value) / (max_value - min_value)) * 100\n"
-        "This inverts governance indicators so higher governance quality becomes lower risk.\n"
-        "The worst observed value maps to 100 (highest risk) and the best maps to 0 (lowest risk)."
+    # Explanation for write-up
+    logger.debug(
+        "Normalization formula: risk = ((max_value - observed_value) / (max_value - min_value)) * 100 "
+        "- inverts governance indicators so higher governance quality becomes lower risk."
     )
 
 
@@ -107,5 +106,5 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as error:
-        print(f"Error: {error}", file=sys.stderr)
+        logger.exception("Unhandled exception in risk_model")
         sys.exit(1)
