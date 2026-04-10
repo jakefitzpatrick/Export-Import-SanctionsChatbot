@@ -1,48 +1,38 @@
+"""Streamlit text-to-SQL chatbot backed by a local HTS SQLite database."""
+import logging
 import os
+import re
+import sqlite3
 from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
 import openai
+import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from rag import (
-    DEFAULT_EMBEDDING_MODEL,
-    SOURCE_KIND_PDF,
-    RagIndex,
-    create_document_source,
-)
-
 load_dotenv()
 
-DEFAULT_TOP_K = 3
-DEFAULT_CHUNK_SIZE = 250
-DEFAULT_CHUNK_OVERLAP = 50
+logger = logging.getLogger(__name__)
 
-CHUNK_CONFIG_BY_KIND = {
-    SOURCE_KIND_PDF: {"chunk_size": 200, "chunk_overlap": 100},
-}
-
-QUESTION_PLACEHOLDER = (
-    "Ask about OFAC SDN Enhanced or U.S. HTS topics (provide enough detail for retrieval):"
-)
-
-COMBINED_SYSTEM_PROMPT = (
-    'You are a compliance assistant that relies purely on the provided PDF. '
-    'Always ground your answers in the retrieved evidence below, cite each chunk with its source label, chunk number, and page number (e.g., "(Source finalCopy_2026HTSRev4.pdf | Source 3 | Page 5)"). '
-    'Prefer exact matches to the user query terms; if any necessary context is missing from the retrieved pages, explicitly flag which pages or sections are unavailable before offering general guidance. '
-    'Do not hallucinate facts; begin every response with "Answer:" followed by a concise conclusion.'
-)
-
-GENERATION_NO_CONTEXT_MESSAGE = (
-    "The retriever did not return any snippets from any source, so be transparent that no direct hits were found and answer based on the documented scope of the datasets."
-)
-
-RESPONSE_STRUCTURE_INSTRUCTION = (
-    'Structure your response in two parts: first a concise "Answer:" line that directly addresses the user question, then a "Supporting Evidence:" section with short bullet(s) referencing the chunk(s) you used. '
-    'Each bullet must end with the citation in the format (Source <label> | Source <chunk number>) so users know exactly which chunk resolved the question.'
-)
+HTS_DB_PATH = Path(__file__).resolve().parent / "data" / "hts.db"
+HTS_COLUMNS = [
+    "hts_code",
+    "chapter",
+    "heading",
+    "subheading",
+    "statistical_suffix",
+    "indent_level",
+    "description",
+    "full_description",
+    "unit",
+    "general_duty_rate",
+    "special_duty_rate",
+    "column2_duty_rate",
+    "quota_quantity",
+    "additional_duties",
+]
 
 COUNTRY_RISK = {
     "Cameroon": {"score": 73.79, "year": 2025},
@@ -65,62 +55,26 @@ def get_risk_color(score: float) -> tuple[str, str]:
         return "#d35400", "Medium"
     return "#1e8449", "Low"
 
+QUESTION_PLACEHOLDER = (
+    "Describe what you need from the Harmonized Tariff Schedule."
+)
 
-@st.cache_resource(show_spinner=False)
-def load_rag_index(
-    embedding_model: str,
-    source_kind: str,
-    source_path: str,
-    chunk_size: int = DEFAULT_CHUNK_SIZE,
-    chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
-) -> RagIndex:
-    document_source = create_document_source(source_kind, Path(source_path))
-    index = RagIndex(
-        document_source=document_source,
-        chunk_size=chunk_size,
-        chunk_overlap=chunk_overlap,
-    )
-    index.ensure_index(embedding_model)
-    return index
+SQL_SYSTEM_PROMPT = (
+    "You are a SQL generator for a SQLite database containing a single table named `hts`. "
+    "The available text columns in `hts` are: "
+    + ", ".join(HTS_COLUMNS)
+    + ". Always respond with exactly one valid SQLite SELECT statement. "
+    "Do not include surrounding markdown, explanations, or additional text. "
+    "The SQL will be executed as-is against the HTS database, so refer only to the columns listed above and avoid modifications (INSERT/UPDATE/DELETE/PRAGMA)."
+)
 
+SELECT_PATTERN = re.compile(r"SELECT\b.*", re.IGNORECASE | re.DOTALL)
 
-def _format_reference_sections(results: list[dict], source_kind: str, source_label: str) -> str:
-    lines: list[str] = []
-    for idx, item in enumerate(results, start=1):
-        chunk_index = item.get("chunk_index")
-        chunk_number = chunk_index + 1 if chunk_index is not None else idx
-        metadata = item.get("metadata", {}) or {}
-        page = metadata.get("page")
-        page_part = f" | Page {page}" if page else ""
-        citation = f"(Source {source_label} | Source {chunk_number}{page_part})"
-        lines.append(
-            f"{citation}\nScore: {item.get('score', 0):.3f}\n{item.get('chunk', '')}"
-        )
-    return "\n\n".join(lines)
+LAST_RESULT_KEY = "latest_hts_result"
 
 
-def build_generation_messages(contexts: list[tuple[str, str]], question: str) -> list[dict]:
-    messages: list[dict] = [{"role": "system", "content": COMBINED_SYSTEM_PROMPT}]
-    if contexts:
-        for label, context_text in contexts:
-            messages.append(
-                {
-                    "role": "system",
-                    "content": f"Retrieved context from {label}:\n{context_text}",
-                }
-            )
-    else:
-        messages.append({"role": "system", "content": GENERATION_NO_CONTEXT_MESSAGE})
-    messages.append({"role": "system", "content": RESPONSE_STRUCTURE_INSTRUCTION})
-    messages.append({"role": "user", "content": question})
-    return messages
-
-
-def main() -> None:
-    st.set_page_config(page_title="ImportInsight AI", layout="wide")
-
-    st.markdown(
-        """
+def _format_css() -> str:
+    return """
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
     html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
@@ -218,14 +172,81 @@ def main() -> None:
         opacity: 1;
     }
     </style>
-    """,
-        unsafe_allow_html=True,
+    """
+
+
+@st.cache_resource
+def get_db_connection(db_path: str) -> sqlite3.Connection:
+    conn = sqlite3.connect(db_path, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def build_sql_messages(question: str) -> list[dict]:
+    return [
+        {"role": "system", "content": SQL_SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": (
+                f"Question: {question}\n"
+                "Return only one SELECT statement that answers the question."
+            ),
+        },
+    ]
+
+
+def extract_select_statement(text: str) -> str | None:
+    cleaned = text.replace("`", "").strip()
+    match = SELECT_PATTERN.search(cleaned)
+    if not match:
+        return None
+    stmt = match.group(0)
+    if ";" in stmt:
+        stmt = stmt.split(";")[0]
+    return stmt.strip()
+
+
+def translate_question_to_sql(question: str, deployment_id: str) -> str:
+    messages = build_sql_messages(question)
+    response = openai.chat.completions.create(
+        model=deployment_id,
+        messages=messages,
+        temperature=1,
     )
+    raw_content = response.choices[0].message.content
+    sql = extract_select_statement(raw_content)
+    if not sql or not sql.strip().lower().startswith("select"):
+        raise ValueError("The model did not return a valid SELECT statement.")
+    return sql
+
+
+def execute_sql(conn: sqlite3.Connection, sql: str) -> pd.DataFrame:
+    normalized = sql.strip().lower()
+    if not normalized.startswith("select"):
+        raise ValueError("Only SELECT statements are allowed.")
+    return pd.read_sql_query(sql, conn)
+
+
+def get_top_level_codes(conn: sqlite3.Connection) -> list[str]:
+    try:
+        df = pd.read_sql_query(
+            'SELECT hts_code, description FROM hts WHERE indent_level = "0" ORDER BY hts_code',
+            conn,
+        )
+    except Exception as exc:
+        logger.warning("Failed to load top-level codes: %s", exc)
+        return []
+    return [f"{row['hts_code']} - {row['description']}" for _, row in df.iterrows()]
+
+
+def main() -> None:
+    st.set_page_config(page_title="ImportInsight AI", layout="wide")
+    st.markdown(_format_css(), unsafe_allow_html=True)
 
     st.markdown(
         """
         <h1 style='color:#0f1f38; font-weight:700; letter-spacing:-0.5px;'>ImportInsight AI</h1>
-        <p style='color:#64748b; font-size:15px; margin-top:-10px;'>Trade and tariff intelligence powered by OFAC RAG sources.</p>
+        <p style='color:#64748b; font-size:15px; margin-top:-10px;'>Natural-language queries -> SQL over the HTS data.</p>
         <hr style='border: 1px solid #e2e8f0; margin-top:16px;'>
     """,
         unsafe_allow_html=True,
@@ -235,7 +256,7 @@ def main() -> None:
         """
         <div style='background-color:#fef9ec; border-left: 4px solid #f0a500; padding: 10px 16px; border-radius: 6px; margin-bottom: 20px;'>
             <span style='color:#7d5a00; font-size:13px;'>
-                <b>Disclaimer:</b> This tool is for informational purposes only and does not constitute legal advice. Always consult a qualified trade compliance professional.
+                <b>Disclaimer:</b> This tool is for informational purposes only and does not constitute legal advice.
             </span>
         </div>
     """,
@@ -246,7 +267,6 @@ def main() -> None:
     openai.api_base = os.getenv("AZURE_OPENAI_ENDPOINT")
     openai.api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2025-04-01-preview")
     api_key = os.getenv("AZURE_OPENAI_API_KEY")
-
     if not api_key:
         st.error("Please set AZURE_OPENAI_API_KEY before running the app.")
         return
@@ -260,50 +280,32 @@ def main() -> None:
         st.error("Please set AZURE_OPENAI_DEPLOYMENT_ID for the chat completion deployment.")
         return
 
-    project_root = Path(__file__).resolve().parent
-    pdf_filename = "finalCopy_2026HTSRev4.pdf"
-    candidates = [project_root / pdf_filename, Path.cwd() / pdf_filename]
-    pdf_path = next((p for p in candidates if p.exists()), None)
-    if not pdf_path:
-        st.error(f"{pdf_filename} not found; place it in {project_root} or the current folder.")
+    if not HTS_DB_PATH.exists():
+        st.error(
+            "The local HTS database is missing. Run `python scripts/build_hts_sqlite.py` to create data/hts.db before launching the app."
+        )
         return
 
-    sidebar_sources: list[dict] = [
-        {"label": pdf_path.name, "kind": SOURCE_KIND_PDF, "path": str(pdf_path)}
-    ]
+    conn = get_db_connection(str(HTS_DB_PATH))
 
-    if not sidebar_sources:
-        st.error("No knowledge sources were found to build the RAG index.")
-        return
-
-    source_labels = [source["label"] for source in sidebar_sources]
-
+    sidebar_sources = []
     with st.sidebar:
         st.image("logo.png", width=150)
         st.markdown("<hr>", unsafe_allow_html=True)
         st.markdown("### Settings")
-        top_k = st.slider("Chunks to consider", 1, 10, DEFAULT_TOP_K)
-        page_filter_input = st.text_input(
-            "Filter pages (comma-separated)",
-            "",
-            help="Restrict results to the numbered pages you care about.",
+        st.caption(
+            "Natural language inputs are translated to SQL, executed locally against a read-only SQLite copy of the HTS data."
         )
         st.caption(
-            "Searches the selected knowledge sources for semantic matches, then passes the highest scoring chunks to the chat completion."
+            "Responses are deterministic: the SQL output is re-run each time against the local database."
         )
-        st.caption(
-            "Temperature is fixed at 1.0 because this deployment currently only supports the default value."
-        )
-        st.caption("Current knowledge sources: " + ", ".join(source_labels))
         st.markdown("<hr>", unsafe_allow_html=True)
-
         st.markdown("### Governance Risk")
         selected_country = st.selectbox("Select country", list(COUNTRY_RISK.keys()))
         data = COUNTRY_RISK[selected_country]
         score = data["score"]
         year = data["year"]
         color, level = get_risk_color(score)
-
         fig = go.Figure(go.Indicator(
             mode="gauge+number",
             value=score,
@@ -318,11 +320,6 @@ def main() -> None:
                     {"range": [45, 75], "color": "#d35400"},
                     {"range": [75, 100], "color": "#c0392b"},
                 ],
-                "threshold": {
-                    "line": {"color": "white", "width": 3},
-                    "thickness": 0.8,
-                    "value": score,
-                },
             },
             title={"text": f"<b>{level} Risk</b><br><span style='font-size:11px;color:#a0aec0'>{selected_country} · {year}</span>", "font": {"size": 13, "color": "white"}},
         ))
@@ -334,41 +331,26 @@ def main() -> None:
             font={"color": "white"},
         )
         st.plotly_chart(fig, width="stretch")
-
         st.markdown("<hr>", unsafe_allow_html=True)
         if st.button("Clear Chat", width="stretch"):
             st.session_state.messages = []
+            st.session_state[LAST_RESULT_KEY] = None
             st.rerun()
         st.markdown("<hr>", unsafe_allow_html=True)
         st.markdown("### About")
-        st.caption("ImportInsight AI helps businesses navigate trade and sanctions regulations using OFAC data.")
-
-    try:
-        rag_indexes: dict[str, RagIndex] = {}
-        for source in sidebar_sources:
-            chunk_settings = CHUNK_CONFIG_BY_KIND.get(source["kind"], {})
-            rag_indexes[source["label"]] = load_rag_index(
-                os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT_ID", DEFAULT_EMBEDDING_MODEL),
-                source["kind"],
-                source["path"],
-                chunk_size=chunk_settings.get("chunk_size", DEFAULT_CHUNK_SIZE),
-                chunk_overlap=chunk_settings.get("chunk_overlap", DEFAULT_CHUNK_OVERLAP),
-            )
-    except Exception as exc:
-        st.error(f"Failed to prepare the RAG index: {exc}")
-        return
+        st.caption("ImportInsight AI translates your prompt into SQL and returns the actual HTS rows.")
 
     if "messages" not in st.session_state:
         st.session_state.messages = []
+    if LAST_RESULT_KEY not in st.session_state:
+        st.session_state[LAST_RESULT_KEY] = None
 
     if len(st.session_state.messages) == 0:
         starters = [
-            "Can I export software to Russia?",
-            "Is Huawei on the entity list?",
-            "What tariffs apply to Chinese electronics?",
-            "How do I screen a foreign supplier?",
-            "What goods are banned from North Korea?",
-            "Are there restrictions on trading with Iran?",
+            "What is the general duty rate for HTS 0101?",
+            "List entries that mention semiconductors in chapter 85.",
+            "Show HTS numbers with an additional duty of 30%.",
+            "Which chapters cover textiles?",
         ]
         st.markdown(
             "<p style='color:#cbd5e1; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:6px;'>Suggested questions</p>",
@@ -397,70 +379,60 @@ def main() -> None:
                 unsafe_allow_html=True,
             )
 
-    question = st.text_area(QUESTION_PLACEHOLDER, height=140, key="prompt_input")
+    try:
+        code_options = get_top_level_codes(conn)
+    except Exception:
+        code_options = []
+
+    selected_hts = st.selectbox("Select HTS Code", [""] + code_options)
+    if selected_hts:
+        question = selected_hts.split(" - ", 1)[0]
+    else:
+        question = st.text_area(QUESTION_PLACEHOLDER, height=140, key="prompt_input")
 
     if st.button("Send", width="stretch"):
-        if not question.strip():
+        if not question or not question.strip():
             st.warning("Please enter a question before sending.")
-            return
-
-        st.session_state.messages.append(
-            {"role": "user", "content": question, "time": datetime.now().strftime("%I:%M %p")}
-        )
-
-        source_contexts: list[tuple[str, str]] = []
-        previews: list[str] = []
-        page_filters = {
-            int(p.strip()) for p in page_filter_input.split(",") if p.strip().isdigit()
-        }
-
-        for source in sidebar_sources:
-            label = source["label"]
-            index = rag_indexes[label]
-            candidates = index.search(question, top_k=top_k * 2)
-            if page_filters:
-                candidates = [
-                    c for c in candidates if c.get("metadata", {}).get("page") in page_filters
-                ]
-
-            terms = [t.lower() for t in question.split()]
-
-            def lex_score(chunk: dict) -> int:
-                text = chunk.get("chunk", "").lower()
-                return sum(text.count(term) for term in terms)
-
-            candidates.sort(key=lambda c: (lex_score(c), c.get("score", 0)), reverse=True)
-            reference_chunks = candidates[:top_k]
-            if reference_chunks:
-                context_text = _format_reference_sections(reference_chunks, source["kind"], label)
-                source_contexts.append((label, context_text))
-                previews.append(f"{label}:\n{context_text}")
-
-        if source_contexts:
-            with st.expander("Validation snippets from all sources", expanded=True):
-                st.text_area(
-                    "Top matches",
-                    value="\n\n".join(previews),
-                    height=260,
-                    max_chars=None,
-                    key="doc_view",
-                )
         else:
-            st.info("No semantically similar documents were found in the archive.")
-
-        messages = build_generation_messages(source_contexts, question)
-
-        with st.spinner("Sending request to Azure OpenAI chat deployment..."):
-            response = openai.chat.completions.create(
-                model=deployment_id,
-                messages=messages,
-                temperature=1.0,
+            st.session_state.messages.append(
+                {"role": "user", "content": question, "time": datetime.now().strftime("%I:%M %p")}
             )
-        reply = response.choices[0].message.content
-        st.session_state.messages.append(
-            {"role": "assistant", "content": reply, "time": datetime.now().strftime("%I:%M %p")}
+            try:
+                sql = translate_question_to_sql(question, deployment_id)
+                df = execute_sql(conn, sql)
+                records = df.head(200).to_dict("records")
+                st.session_state[LAST_RESULT_KEY] = {
+                    "sql": sql,
+                    "row_count": len(df),
+                    "records": records,
+                    "columns": list(df.columns),
+                    "rows_displayed": len(records),
+                }
+                assistant_text = f"Executed SQL and returned {len(df)} row(s)."
+            except Exception as exc:
+                logger.exception("SQL execution failed")
+                st.session_state[LAST_RESULT_KEY] = None
+                assistant_text = f"Error: {exc}"
+            st.session_state.messages.append(
+                {"role": "assistant", "content": assistant_text, "time": datetime.now().strftime("%I:%M %p")}
+            )
+            st.session_state.prompt_input = ""
+            st.rerun()
+
+    latest_result = st.session_state.get(LAST_RESULT_KEY)
+    if latest_result:
+        st.markdown("---")
+        st.markdown("### Last SQL Result")
+        st.code(latest_result["sql"], language="sql")
+        st.caption(
+            f"Returned {latest_result['row_count']} row(s); showing {latest_result['rows_displayed']} row(s) below."
         )
-        st.rerun()
+        if latest_result["records"]:
+            st.dataframe(
+                pd.DataFrame(latest_result["records"], columns=latest_result["columns"])
+            )
+        else:
+            st.info("The last query returned no rows.")
 
 
 if __name__ == "__main__":
