@@ -17,7 +17,6 @@ This guide explains how we added structured logging to the chatbot, mixing clear
 ## 3. Adding Logs to Key Modules
 - **app.py**: Logs app startup and RAG index initialization.
 - **rag.py**: Logs when creating document sources and picking the latest HTS CSV file.
-- **governance.py**: Replaced its example `print()` with an `info()` log entry.
 - **risk_model.py**: Swapped summary and error `print()` calls for `info()`, `debug()`, and `exception()` logs.
 
 ## 4. Console Output Fix

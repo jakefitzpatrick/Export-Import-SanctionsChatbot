@@ -1,15 +1,43 @@
 #!/usr/bin/env python3
-"""
-Create country-level trade risk scores from V-Dem governance indicators.
-"""
+"""Utilities for computing and consuming governance risk scores."""
+
+from __future__ import annotations
 
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
+import streamlit as st
 
 from logger import setup_logger
+
 logger = setup_logger(__name__)
+
+RISK_THRESHOLDS = {
+    "Low": 33.0,
+    "Medium": 66.0,
+    "High": 100.0,
+}
+
+RISK_COLOR_MAP = {
+    "Low": "#1f9d55",
+    "Medium": "#f1c40f",
+    "High": "#c0392b",
+}
+
+FALLBACK_COUNTRY_RISK = {
+    "Cameroon": {"score": 73.79, "year": 2025},
+    "Russia": {"score": 91.2, "year": 2025},
+    "China": {"score": 65.4, "year": 2025},
+    "Iran": {"score": 95.1, "year": 2025},
+    "Germany": {"score": 12.3, "year": 2025},
+    "Canada": {"score": 8.7, "year": 2025},
+    "Brazil": {"score": 48.5, "year": 2025},
+    "Nigeria": {"score": 78.2, "year": 2025},
+    "France": {"score": 15.1, "year": 2025},
+    "India": {"score": 52.3, "year": 2025},
+}
 
 # ✅ FIXED FILE PATH
 INPUT_PATH = Path("data/vdem_risk_subset_CLEANED.csv")
@@ -61,6 +89,67 @@ def normalize_indicator(series: pd.Series) -> pd.Series:
     return scaled * 100
 
 
+def categorize_risk(score: float) -> str:
+    if not 0 <= score <= 100:
+        raise ValueError("risk score must be between 0 and 100")
+    if score < RISK_THRESHOLDS["Low"]:
+        return "Low"
+    if score < RISK_THRESHOLDS["Medium"]:
+        return "Medium"
+    return "High"
+
+
+def get_risk_color(score: float) -> tuple[str, str]:
+    level = categorize_risk(score)
+    return RISK_COLOR_MAP[level], level
+
+
+def load_country_risk_df(csv_path: Path | str = OUTPUT_PATH) -> pd.DataFrame:
+    path = Path(csv_path)
+    if not path.exists():
+        return _fallback_country_risk_df()
+    try:
+        df = pd.read_csv(path)
+    except Exception as exc:
+        logger.warning("Failed to load %s: %s", path, exc)
+        return _fallback_country_risk_df()
+    country_col = "country_name" if "country_name" in df.columns else "country"
+    if country_col not in df.columns or "risk_score" not in df.columns:
+        logger.warning("Risk CSV missing required columns; using fallback data.")
+        return _fallback_country_risk_df()
+    df = df.rename(columns={country_col: "country"})
+    df = df.dropna(subset=["country", "risk_score"])
+    df["score"] = df["risk_score"].astype(float)
+    if "year" not in df.columns:
+        df["year"] = datetime.now().year
+    df["level"] = df["score"].apply(categorize_risk)
+    df["color"] = df["level"].map(RISK_COLOR_MAP)
+    columns = ["country", "score", "year", "color", "level"]
+    return df[columns].drop_duplicates(subset=["country"]).reset_index(drop=True)
+
+
+@st.cache_resource(show_spinner=False)
+def get_risk_df() -> pd.DataFrame:
+    """Streamlit-friendly wrapper that loads the scored CSV once per process."""
+    return load_country_risk_df()
+
+
+def _fallback_country_risk_df() -> pd.DataFrame:
+    rows = []
+    for name, meta in FALLBACK_COUNTRY_RISK.items():
+        color, level = get_risk_color(meta["score"])
+        rows.append(
+            {
+                "country": name,
+                "score": meta["score"],
+                "year": meta.get("year", datetime.now().year),
+                "color": color,
+                "level": level,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
 def main() -> None:
     # Load and validate data
     df = load_data(INPUT_PATH)
@@ -74,10 +163,8 @@ def main() -> None:
     # Compute weighted risk score
     df["risk_score"] = sum(df[col] * weight for col, weight in WEIGHTS.items())
 
-    # Create categorical risk levels
-    bins = [0, 25, 50, 75, 100.000001]
-    labels = ["Low", "Moderate", "High", "Very High"]
-    df["risk_level"] = pd.cut(df["risk_score"], bins=bins, labels=labels, right=False)
+    # Create categorical risk levels using shared thresholds
+    df["risk_level"] = df["risk_score"].apply(categorize_risk)
 
     # Identify country column
     id_col = "country_name" if "country_name" in df.columns else "country"
