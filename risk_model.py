@@ -1,7 +1,7 @@
+from __future__ import annotations
 #!/usr/bin/env python3
 """Utilities for computing and consuming governance risk scores."""
 
-from __future__ import annotations
 
 import sys
 from datetime import datetime

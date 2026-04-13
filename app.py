@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Streamlit text-to-SQL chatbot backed by a local HTS SQLite database."""
 import json
 import logging
@@ -776,27 +777,36 @@ def maybe_run_analysis(
 
 def main() -> None:
     st.set_page_config(page_title="ImportInsight AI", layout="wide")
+    st.markdown("""
+    <style>
+    /* Hide subtitle text at top */
+    section.main > div.block-container > div:first-child p { display: none; }
+    /* Collapse settings expander styling */
+    [data-testid="stSidebar"] .streamlit-expanderHeader {
+        font-size: 11px !important;
+        font-weight: 600 !important;
+        text-transform: uppercase !important;
+        letter-spacing: 0.08em !important;
+        color: #64748b !important;
+        background: transparent !important;
+        border: none !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
     st.markdown(_format_css(), unsafe_allow_html=True)
 
-    st.markdown(
-        """
-        <h1 style='color:#0f1f38; font-weight:700; letter-spacing:-0.5px;'>ImportInsight AI</h1>
-        <p style='color:#64748b; font-size:15px; margin-top:-10px;'>Natural-language queries -> SQL over the HTS data.</p>
-        <hr style='border: 1px solid #e2e8f0; margin-top:16px;'>
-    """,
-        unsafe_allow_html=True,
-    )
-
-    st.markdown(
-        """
-        <div style='background-color:#fef9ec; border-left: 4px solid #f0a500; padding: 10px 16px; border-radius: 6px; margin-bottom: 20px;'>
-            <span style='color:#7d5a00; font-size:13px;'>
-                <b>Disclaimer:</b> This tool is for informational purposes only and does not constitute legal advice.
-            </span>
+    st.markdown("""
+        <div style='background:linear-gradient(135deg,#0f1f38 0%,#1a3a5c 100%);border-radius:12px;padding:12px 20px;margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;'>
+            <div>
+                <span style='color:#ffffff;font-size:13px;font-weight:600;letter-spacing:0.05em;'>IMPORTINSIGHT AI</span>
+                <span style='color:#64748b;font-size:12px;margin-left:12px;'>HTS 2026 · SQLite</span>
+            </div>
+            <div style='display:flex;align-items:center;gap:6px;'>
+                <div style='width:8px;height:8px;border-radius:50%;background:#22c55e;'></div>
+                <span style='color:#94a3b8;font-size:11px;'>Connected</span>
+            </div>
         </div>
-    """,
-        unsafe_allow_html=True,
-    )
+    """, unsafe_allow_html=True)
 
     openai.api_type = "azure"
     openai.api_base = os.getenv("AZURE_OPENAI_ENDPOINT")
@@ -857,22 +867,31 @@ def main() -> None:
     )
 
     with st.sidebar:
-        st.image("logo.png", width=150)
+        st.markdown("""
+        <style>
+        [data-testid="stSidebar"] { background-color: #0f1f38 !important; }
+        [data-testid="stSidebar"] * { color: #e2e8f0 !important; }
+        [data-testid="stSidebar"] img { filter: brightness(0) invert(1); }
+        [data-testid="stSidebar"] hr { border-color: rgba(255,255,255,0.12) !important; }
+        [data-testid="stSidebar"] .stButton > button {
+            background-color: rgba(255,255,255,0.08) !important;
+            border: 1px solid rgba(255,255,255,0.15) !important;
+            color: #e2e8f0 !important;
+            border-radius: 10px !important;
+            width: 100%;
+        }
+        </style>
+        """, unsafe_allow_html=True)
+        st.image("logo.png", width=140)
+        st.markdown("<h2 style='color:white;font-size:20px;margin-top:8px;'>ImportInsight AI</h2>", unsafe_allow_html=True)
+        st.markdown("<p style='color:#94a3b8;font-size:12px;'>Trade and tariff intelligence powered by your HTS SQLite database.</p>", unsafe_allow_html=True)
+        st.markdown("<div style='background:rgba(240,165,0,0.12);border-left:3px solid #f0a500;border-radius:6px;padding:8px 12px;font-size:11px;color:#fde68a;margin:8px 0;'><b>Disclaimer:</b> This tool is for informational purposes only and does not constitute legal advice.</div>", unsafe_allow_html=True)
         st.markdown("<hr>", unsafe_allow_html=True)
-        st.markdown("### Settings")
-        st.caption(
-            "Natural language inputs are translated to SQL, executed locally against a read-only SQLite copy of the HTS data."
-        )
-        st.caption(
-            "Responses are deterministic: the SQL output is re-run each time against the local database."
-        )
-        st.markdown("<hr>", unsafe_allow_html=True)
-        if st.button("Clear Chat", width="stretch", key="sidebar_clear"):
-            reset_app_state()
-            st.rerun()
-        st.markdown("<hr>", unsafe_allow_html=True)
-        st.markdown("### About")
-        st.caption("ImportInsight AI translates your prompt into SQL and returns the actual HTS rows.")
+        with st.expander("About", expanded=False):
+            st.caption("ImportInsight AI translates your prompt into SQL and returns the actual HTS rows.")
+        with st.expander("Settings", expanded=False):
+            st.caption("Natural language inputs are translated to SQL, executed locally against a read-only SQLite copy of the HTS data.")
+            st.caption("Responses are deterministic: the SQL output is re-run each time against the local database.")
 
     context_bar = st.container()
     with context_bar:
@@ -942,7 +961,7 @@ def main() -> None:
         if st.session_state.get("analysis_inflight"):
             st.caption("Running analysis…")
     analysis_stream_placeholder: st.delta_generator.DeltaGenerator | None = None
-    chat_feed = st.container()
+    chat_feed = st.container(height=500, border=False)
     composer = st.container()
 
     with composer:
@@ -1030,13 +1049,16 @@ def main() -> None:
                     st.warning(f"Skipped non-percentage duty rates: {listed}")
                 risk_snapshot = msg.get("risk_snapshot") or []
                 if risk_snapshot:
-                    pills_html = "".join(
-                        f"<div class='risk-pill' style='border-left-color:{snap['color']};'>"
-                        f"<strong>{snap['country']}</strong>"
-                        f"Score {snap['score']:.1f} · {snap['level']}"
-                        "</div>"
-                        for snap in risk_snapshot
-                    )
+                    def risk_style(level):
+                        if level == "High":
+                            return "background:#fff1f1;border-left:4px solid #ef4444;color:#991b1b;"
+                        elif level in ("Medium", "Moderate"):
+                            return "background:#fffbeb;border-left:4px solid #f59e0b;color:#92400e;"
+                        return "background:#f0fdf4;border-left:4px solid #22c55e;color:#166534;"
+                    def make_pill(s):
+                        st = risk_style(s["level"])
+                        return "<div class='risk-pill' style='" + st + "'><strong style='display:block;font-size:13px;'>" + s["country"] + "</strong>Score " + str(round(s["score"],1)) + " · " + s["level"] + "</div>"
+                    pills_html = "".join(make_pill(s) for s in risk_snapshot)
                     st.markdown(f"<div class='risk-pills'>{pills_html}</div>", unsafe_allow_html=True)
                 chart_data = msg.get("chart_data")
                 if chart_data:
