@@ -777,36 +777,9 @@ def maybe_run_analysis(
 
 def main() -> None:
     st.set_page_config(page_title="ImportInsight AI", layout="wide")
-    st.markdown("""
-    <style>
-    /* Hide subtitle text at top */
-    section.main > div.block-container > div:first-child p { display: none; }
-    /* Collapse settings expander styling */
-    [data-testid="stSidebar"] .streamlit-expanderHeader {
-        font-size: 11px !important;
-        font-weight: 600 !important;
-        text-transform: uppercase !important;
-        letter-spacing: 0.08em !important;
-        color: #64748b !important;
-        background: transparent !important;
-        border: none !important;
-    }
-    </style>
-    """, unsafe_allow_html=True)
     st.markdown(_format_css(), unsafe_allow_html=True)
 
-    st.markdown("""
-        <div style='background:linear-gradient(135deg,#0f1f38 0%,#1a3a5c 100%);border-radius:12px;padding:12px 20px;margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;'>
-            <div>
-                <span style='color:#ffffff;font-size:13px;font-weight:600;letter-spacing:0.05em;'>IMPORTINSIGHT AI</span>
-                <span style='color:#64748b;font-size:12px;margin-left:12px;'>HTS 2026 · SQLite</span>
-            </div>
-            <div style='display:flex;align-items:center;gap:6px;'>
-                <div style='width:8px;height:8px;border-radius:50%;background:#22c55e;'></div>
-                <span style='color:#94a3b8;font-size:11px;'>Connected</span>
-            </div>
-        </div>
-    """, unsafe_allow_html=True)
+
 
     openai.api_type = "azure"
     openai.api_base = os.getenv("AZURE_OPENAI_ENDPOINT")
@@ -869,10 +842,21 @@ def main() -> None:
     with st.sidebar:
         st.markdown("""
         <style>
-        [data-testid="stSidebar"] { background-color: #0f1f38 !important; }
+        [data-testid="stSidebar"] { background-color: #0B2A4A !important; }
         [data-testid="stSidebar"] * { color: #e2e8f0 !important; }
         [data-testid="stSidebar"] img { filter: brightness(0) invert(1); }
         [data-testid="stSidebar"] hr { border-color: rgba(255,255,255,0.12) !important; }
+        [data-testid="stSidebar"] [data-baseweb="tag"] {
+            background-color: rgba(255,255,255,0.1) !important;
+            border: 0.5px solid rgba(255,255,255,0.2) !important;
+            border-radius: 6px !important;
+        }
+        [data-testid="stSidebar"] [data-baseweb="tag"] span { color: rgba(255,255,255,0.85) !important; font-size: 11px !important; }
+        [data-testid="stSidebar"] [data-baseweb="select"] > div {
+            background-color: rgba(255,255,255,0.05) !important;
+            border: 0.5px solid rgba(255,255,255,0.12) !important;
+            border-radius: 8px !important;
+        }
         [data-testid="stSidebar"] .stButton > button {
             background-color: rgba(255,255,255,0.08) !important;
             border: 1px solid rgba(255,255,255,0.15) !important;
@@ -880,44 +864,42 @@ def main() -> None:
             border-radius: 10px !important;
             width: 100%;
         }
+        span[data-baseweb="tag"] { background-color: #0B2A4A !important; border-color: #4F6D7A !important; }
+        span[data-baseweb="tag"] span { color: #ffffff !important; }
         </style>
         """, unsafe_allow_html=True)
-        st.image("logo.png", width=140)
+        st.image("logo_clean.png", width=140)
         st.markdown("<h2 style='color:white;font-size:20px;margin-top:8px;'>ImportInsight AI</h2>", unsafe_allow_html=True)
         st.markdown("<p style='color:#94a3b8;font-size:12px;'>Trade and tariff intelligence powered by your HTS SQLite database.</p>", unsafe_allow_html=True)
         st.markdown("<div style='background:rgba(240,165,0,0.12);border-left:3px solid #f0a500;border-radius:6px;padding:8px 12px;font-size:11px;color:#fde68a;margin:8px 0;'><b>Disclaimer:</b> This tool is for informational purposes only and does not constitute legal advice.</div>", unsafe_allow_html=True)
+        st.markdown("<hr>", unsafe_allow_html=True)
+        st.markdown("<p style='font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:0.1em;color:rgba(255,255,255,0.35);margin-bottom:8px;'>Countries</p>", unsafe_allow_html=True)
+        st.multiselect("", options=country_options, key="selected_countries", max_selections=MAX_COUNTRY_SELECTION, label_visibility="collapsed")
+        st.markdown("<p style='font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:0.1em;color:rgba(255,255,255,0.35);margin-top:12px;margin-bottom:8px;'>HTS Products</p>", unsafe_allow_html=True)
+        if display_options:
+            st.multiselect("", options=display_options, key="selected_products_display", max_selections=MAX_PRODUCT_SELECTION, label_visibility="collapsed")
         st.markdown("<hr>", unsafe_allow_html=True)
         with st.expander("About", expanded=False):
             st.caption("ImportInsight AI translates your prompt into SQL and returns the actual HTS rows.")
         with st.expander("Settings", expanded=False):
             st.caption("Natural language inputs are translated to SQL, executed locally against a read-only SQLite copy of the HTS data.")
             st.caption("Responses are deterministic: the SQL output is re-run each time against the local database.")
+        st.markdown("<hr>", unsafe_allow_html=True)
+        if st.button("Clear Chat", use_container_width=True, key="sidebar_clear"):
+            reset_app_state()
+            st.rerun()
 
     context_bar = st.container()
     with context_bar:
         st.markdown('<div data-context="true"></div>', unsafe_allow_html=True)
-        st.markdown("### Context")
-        st.caption("Select up to three countries and products to drive the analysis below.")
-        sel_cols = st.columns(2)
-        with sel_cols[0]:
-            st.multiselect(
-                "Countries",
-                options=country_options,
-                key="selected_countries",
-                max_selections=MAX_COUNTRY_SELECTION,
-                help="Choose up to three countries to compare governance risk.",
-            )
-        with sel_cols[1]:
-            if display_options:
-                st.multiselect(
-                    "HTS Products",
-                    options=display_options,
-                    key="selected_products_display",
-                    max_selections=MAX_PRODUCT_SELECTION,
-                    help="Products are loaded from the local HTS SQLite database.",
-                )
-            else:
-                st.error("No HTS products found—rebuild the SQLite database.")
+        selected_c = st.session_state.get("selected_countries", [])
+        selected_p = st.session_state.get("selected_products_display", [])
+        country_pills = " ".join([f"<span style='padding:3px 10px;border-radius:5px;background:#0B2A4A;color:#fff;font-size:11px;font-weight:500;margin-right:4px;display:inline-block;'>{c}</span>" for c in selected_c])
+        product_pills = " ".join([f"<span style='padding:3px 10px;border-radius:5px;background:#4F6D7A;color:#fff;font-size:11px;font-weight:500;margin-right:4px;display:inline-block;'>{p.split(' — ')[0] if ' — ' in p else p}</span>" for p in selected_p])
+        sep = "<span style='display:inline-block;width:1px;height:14px;background:#D1D5DB;margin:0 6px;vertical-align:middle;'></span>" if selected_c and selected_p else ""
+        pills_html = country_pills + sep + product_pills if (selected_c or selected_p) else "<span style='font-size:12px;color:#9CA3AF;'>Select countries and products from the sidebar</span>"
+        st.markdown(f"<div style='padding:4px 0 8px;'>{pills_html}</div>", unsafe_allow_html=True)
+
         selected_countries = st.session_state.get("selected_countries", [])
         selected_products_display = st.session_state.get("selected_products_display", [])
         st.caption(
@@ -961,7 +943,7 @@ def main() -> None:
         if st.session_state.get("analysis_inflight"):
             st.caption("Running analysis…")
     analysis_stream_placeholder: st.delta_generator.DeltaGenerator | None = None
-    chat_feed = st.container(height=500, border=False)
+    chat_feed = st.container(height=350, border=False)
     composer = st.container()
 
     with composer:
@@ -1051,13 +1033,13 @@ def main() -> None:
                 if risk_snapshot:
                     def risk_style(level):
                         if level == "High":
-                            return "background:#fff1f1;border-left:4px solid #ef4444;color:#991b1b;"
+                            return "background:#FCEBEB;border-left:4px solid #E24B4A;color:#991b1b;"
                         elif level in ("Medium", "Moderate"):
-                            return "background:#fffbeb;border-left:4px solid #f59e0b;color:#92400e;"
+                            return "background:#FAEEDA;border-left:4px solid #BA7517;color:#92400e;"
                         return "background:#f0fdf4;border-left:4px solid #22c55e;color:#166534;"
                     def make_pill(s):
-                        st = risk_style(s["level"])
-                        return "<div class='risk-pill' style='" + st + "'><strong style='display:block;font-size:13px;'>" + s["country"] + "</strong>Score " + str(round(s["score"],1)) + " · " + s["level"] + "</div>"
+                        st2 = risk_style(s["level"])
+                        return "<div class='risk-pill' style='" + st2 + "'><strong style='display:block;font-size:13px;'>" + s["country"] + "</strong>Score " + str(round(s["score"],1)) + " · " + s["level"] + "</div>"
                     pills_html = "".join(make_pill(s) for s in risk_snapshot)
                     st.markdown(f"<div class='risk-pills'>{pills_html}</div>", unsafe_allow_html=True)
                 chart_data = msg.get("chart_data")
