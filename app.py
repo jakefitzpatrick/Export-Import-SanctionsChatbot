@@ -110,9 +110,9 @@ def _format_css() -> str:
         --border:#e2e8f0;
         --card:#ffffff;
     }
-    html, body, [class*="css"] { font-family: 'Inter', sans-serif; background:#E8ECF2; }
-    section.main { background: #E8ECF2; }
-    .block-container { background: #E8ECF2; }
+    html, body, [class*="css"] { font-family: 'Inter', sans-serif; background:#ffffff; }
+    section.main { background: #ffffff; }
+    .block-container { background: #ffffff; }
     section.main > div.block-container {
         display:flex;
         flex-direction:column;
@@ -968,10 +968,10 @@ div
 
         st.markdown("<hr>", unsafe_allow_html=True)
         st.markdown("<p style='font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:0.1em;color:rgba(255,255,255,0.35);margin-bottom:8px;'>Countries</p>", unsafe_allow_html=True)
-        st.multiselect("", options=country_options, key="selected_countries", max_selections=MAX_COUNTRY_SELECTION, label_visibility="collapsed")
+        st.multiselect("Countries", options=country_options, key="selected_countries", max_selections=MAX_COUNTRY_SELECTION, label_visibility="hidden")
         st.markdown("<p style='font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:0.1em;color:rgba(255,255,255,0.35);margin-top:12px;margin-bottom:8px;'>HTS Products</p>", unsafe_allow_html=True)
         if display_options:
-            st.multiselect("", options=display_options, key="selected_products_display", max_selections=MAX_PRODUCT_SELECTION, label_visibility="collapsed")
+            st.multiselect("HTS Products", options=display_options, key="selected_products_display", max_selections=MAX_PRODUCT_SELECTION, label_visibility="hidden")
         st.markdown("<hr>", unsafe_allow_html=True)
         with st.expander("About", expanded=False):
             st.caption("ImportInsight AI translates your prompt into SQL and returns the actual HTS rows.")
@@ -1038,7 +1038,7 @@ div
                 disabled=analyse_disabled,
             )
         with action_cols[1]:
-            if st.button("Clear Chat", width="stretch", key="context_clear"):
+            if st.button("Clear Inputs", width="stretch", key="context_clear"):
                 reset_app_state()
                 st.rerun()
         if analyse_clicked:
@@ -1167,7 +1167,7 @@ div
                             f"<span style='font-size:13px;font-weight:600;color:#0B2A4A;'>{country}</span>"
                             f"<span style='font-size:10.5px;font-weight:500;padding:2px 9px;border-radius:100px;background:{badge_bg};color:{badge_color};'>{level}</span>"
                             f"</div>"
-                            f"<div style='height:7px;background:#F5F7FA;border-radius:100px;position:relative;border:0.5px solid #E5E7EB;'>"
+                            f"<div style='height:7px;background:#ffffff;border-radius:100px;position:relative;border:0.5px solid #E5E7EB;'>"
                             f"<div style='position:absolute;left:0;top:0;height:100%;width:33%;background:#1D9E75;border-radius:100px 0 0 100px;'></div>"
                             f"<div style='position:absolute;left:33%;top:0;height:100%;width:34%;background:#BA7517;'></div>"
                             f"<div style='position:absolute;left:67%;top:0;height:100%;width:33%;background:#D85A30;border-radius:0 100px 100px 0;'></div>"
