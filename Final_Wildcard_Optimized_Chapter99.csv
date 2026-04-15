@@ -1738,6 +1738,9 @@ NEWCODE,HTS_MASTER_CODE,COUNTRY,NEWRATE,NEWRATE_CLEAN,RATE_MODIFIER,ADDITIONAL_D
 9903.02.80,SEE NOTE 2,South Korea,15 (Floor),15.0,Floor,,,,Section 122,30
 9903.02.83,SEE NOTE 2,Switzerland,15 (Floor),15.0,Floor,,,,Section 122,30
 9903.02.88,SEE NOTE 2,Liechtenstein,15 (Floor),15.0,Floor,,,,Section 122,30
+9903.01.49,ALL,Nicaragua,Base Rate,,,0.18,,,Section 122,30
+9903.02.14,ALL,Costa Rica,Base Rate,,,0.15,,,Section 122,30
+9903.02.47,ALL,Nicaragua,Base Rate,,,0.18,,,Section 122,30
 9903.03.01,ALL,Global,10.0,10.0,Floor,,,,Section 122,40
 9903.03.03,SEE NOTE 2,Global,Base Rate,,,,,,Section 122,40
 9903.03.04,SEE NOTE 2,Global,Base Rate,,,,,,Section 122,40

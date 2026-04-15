@@ -54,7 +54,19 @@ WITH matched AS (
         ) AS _rn
     FROM hts AS m
     JOIN chapter_99 AS c
-        ON (c.HTS_MASTER_CODE = m.hts_code OR c.HTS_MASTER_CODE = 'ALL')
+        ON (
+            -- Exact match (13-char Ch99 codes, e.g. "2208.50.00.30")
+            c.HTS_MASTER_CODE = m.hts_code
+            -- 8-digit Ch99 code (10 chars, e.g. "0402.21.90") vs 10-digit HTS ("0402.21.90.00")
+            OR (LENGTH(c.HTS_MASTER_CODE) = 10
+                AND c.HTS_MASTER_CODE = SUBSTR(m.hts_code, 1, 10))
+            -- 10-digit Ch99 code missing the final period (12 chars, e.g. "8541.42.0010")
+            -- → re-insert the missing dot: "8541.42.00" + "." + "10" = "8541.42.00.10"
+            OR (LENGTH(c.HTS_MASTER_CODE) = 12
+                AND SUBSTR(c.HTS_MASTER_CODE, 1, 10) || '.' || SUBSTR(c.HTS_MASTER_CODE, 11) = m.hts_code)
+            -- ALL wildcard matches every product
+            OR c.HTS_MASTER_CODE = 'ALL'
+        )
 )
 SELECT
     hts_code,

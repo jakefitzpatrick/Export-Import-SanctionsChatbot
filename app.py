@@ -519,20 +519,19 @@ def fetch_ch99_for_codes_and_countries(
     selected_codes: list[str],
     selected_countries: list[str],
 ) -> pd.DataFrame:
-    """Return the best Chapter 99 rule per (hts_code, queried_country).
+    """Return ALL Chapter 99 rows for each (hts_code, queried_country/Global) pair.
 
-    The view hts_with_ch99 already selected the best row per (hts_code,
-    ch99_country bucket).  For each queried country we pull both the
-    country-specific bucket AND the 'Global' bucket, then keep the one
-    with the lower MATCH_PRIORITY (higher precedence).
+    Queries the raw chapter_99 table with the multi-format JOIN so that every
+    applicable rule (e.g. a higher-priority CAFTA-DR row AND a lower-priority
+    Section 122 additive row) is visible to _best_ch99_rule for proper combination.
     """
     if not selected_codes or not selected_countries:
         return pd.DataFrame()
 
-    # Check whether the view exists (DB may have been built without ch99).
+    # Check whether the table exists.
     try:
         cur = conn.cursor()
-        cur.execute("SELECT 1 FROM hts_with_ch99 LIMIT 1")
+        cur.execute("SELECT 1 FROM chapter_99 LIMIT 1")
     except Exception:
         return pd.DataFrame()
 
@@ -540,16 +539,25 @@ def fetch_ch99_for_codes_and_countries(
     country_ph = ",".join(["?"] * len(selected_countries))
     query = f"""
         SELECT
-            hts_code,
-            ch99_country,
-            CAST(ch99_newrate      AS REAL) AS ch99_newrate,
-            ch99_rate_modifier,
-            COALESCE(CAST(ch99_additional_pct AS REAL), 0.0) AS ch99_additional_pct,
-            ch99_tradeprogram,
-            ch99_match_priority
-        FROM hts_with_ch99
-        WHERE hts_code IN ({code_ph})
-          AND (ch99_country IN ({country_ph}) OR ch99_country = 'Global')
+            m.hts_code                                                      AS hts_code,
+            c.COUNTRY                                                       AS ch99_country,
+            CAST(NULLIF(c.NEWRATE_CLEAN, '') AS REAL)                       AS ch99_newrate,
+            c.RATE_MODIFIER                                                 AS ch99_rate_modifier,
+            COALESCE(CAST(NULLIF(c.ADDITIONAL_DUTY_PCT, '') AS REAL), 0.0) AS ch99_additional_pct,
+            c.TRADEPROGRAM                                                  AS ch99_tradeprogram,
+            CAST(c.MATCH_PRIORITY AS INTEGER)                               AS ch99_match_priority
+        FROM hts AS m
+        JOIN chapter_99 AS c
+            ON (
+                c.HTS_MASTER_CODE = m.hts_code
+                OR (LENGTH(c.HTS_MASTER_CODE) = 10
+                    AND c.HTS_MASTER_CODE = SUBSTR(m.hts_code, 1, 10))
+                OR (LENGTH(c.HTS_MASTER_CODE) = 12
+                    AND SUBSTR(c.HTS_MASTER_CODE, 1, 10) || '.' || SUBSTR(c.HTS_MASTER_CODE, 11) = m.hts_code)
+                OR c.HTS_MASTER_CODE = 'ALL'
+            )
+        WHERE m.hts_code IN ({code_ph})
+          AND (c.COUNTRY IN ({country_ph}) OR c.COUNTRY = 'Global')
     """
     params = selected_codes + selected_countries
     df = pd.read_sql_query(query, conn, params=params)
@@ -561,17 +569,105 @@ def _best_ch99_rule(
     hts_code: str,
     country: str,
 ) -> dict | None:
-    """Return the highest-precedence (lowest MATCH_PRIORITY) Chapter 99 row
-    for a given (hts_code, country) pair, considering 'Global' fallback."""
+    """Synthesize the net Chapter 99 effect for a (hts_code, country) pair.
+
+    Because multiple rules from different trade programs can apply simultaneously
+    (e.g. a CAFTA-DR-specific row at P10 and a Section 122 additive row at P30),
+    this function:
+      1. Finds the best (lowest MATCH_PRIORITY) Floor rule → sets the floor rate.
+      2. Sums all additive ADDITIONAL_DUTY_PCT values from non-Floor, non-replacement rows.
+      3. Finds the best replacement NEWRATE_CLEAN (non-Floor) row if one exists.
+      4. Returns a synthetic rule dict combining Floor + additive so that
+         apply_ch99_to_duty can compute max(base + additive, floor).
+    """
     if ch99_df.empty:
         return None
     mask = ch99_df["hts_code"] == hts_code
     mask &= (ch99_df["ch99_country"] == country) | (ch99_df["ch99_country"] == "Global")
-    candidates = ch99_df[mask]
+    candidates = ch99_df[mask].copy()
     if candidates.empty:
         return None
-    best = candidates.loc[candidates["ch99_match_priority"].idxmin()]
-    return best.to_dict()
+
+    candidates = candidates.sort_values("ch99_match_priority")
+
+    is_floor = candidates["ch99_rate_modifier"] == "Floor"
+    floor_rows = candidates[is_floor]
+    non_floor = candidates[~is_floor]
+
+    # Best replacement rate (non-Floor with an actual NEWRATE_CLEAN number)
+    replacement_rows = non_floor[non_floor["ch99_newrate"].notna()]
+    if not replacement_rows.empty:
+        return replacement_rows.iloc[0].to_dict()
+
+    # Best Floor rate (lowest priority = highest precedence)
+    best_floor_rate: float | None = None
+    best_floor_program: str = ""
+    if not floor_rows.empty:
+        best_floor_row = floor_rows.iloc[0]
+        v = best_floor_row["ch99_newrate"]
+        try:
+            f = float(v)
+            best_floor_rate = None if f != f else f
+        except (TypeError, ValueError):
+            best_floor_rate = None
+        best_floor_program = best_floor_row.get("ch99_tradeprogram", "")
+
+    # Sum additive surcharges from non-Floor, non-replacement rows.
+    #
+    # Two exclusions:
+    # 1. Deduplicate by (tradeprogram, country, match_priority, additional_pct) so that
+    #    multiple NEWCODE rows from the same program (e.g. Nicaragua's 9903.01.49 and
+    #    9903.02.47 both at P30 Section 122 0.18) are not double-counted.
+    # 2. If a Floor row exists at the same (country, priority) level as an additive row,
+    #    the Floor is mutually exclusive with the additive — exclude the additive.
+    #    (e.g. USMCA Blocker Floor at P30/Canada supersedes Transshipment-Evasion +40%
+    #    additive also at P30/Canada; they are alternative enforcement paths, not stackable.)
+    floor_country_priorities: set[tuple] = {
+        (r["ch99_country"], r["ch99_match_priority"])
+        for _, r in floor_rows.iterrows()
+    }
+    raw_additive = non_floor[non_floor["ch99_newrate"].isna()]
+    non_superseded_additive = raw_additive[
+        ~raw_additive.apply(
+            lambda r: (r["ch99_country"], r["ch99_match_priority"]) in floor_country_priorities,
+            axis=1,
+        )
+    ].drop_duplicates(
+        subset=["ch99_tradeprogram", "ch99_country", "ch99_match_priority", "ch99_additional_pct"]
+    )
+    additive_rows = non_superseded_additive
+    total_additive: float = 0.0
+    for _, row in additive_rows.iterrows():
+        v = row.get("ch99_additional_pct", 0.0)
+        try:
+            f = float(v)
+            if f == f:  # not NaN
+                total_additive += f
+        except (TypeError, ValueError):
+            pass
+
+    # Determine the representative trade program label
+    if total_additive > 0 and not additive_rows.empty:
+        tradeprogram = additive_rows.iloc[0].get("ch99_tradeprogram", "")
+    elif best_floor_rate is not None:
+        tradeprogram = best_floor_program
+    elif not candidates.empty:
+        tradeprogram = candidates.iloc[0].get("ch99_tradeprogram", "")
+    else:
+        tradeprogram = ""
+
+    if best_floor_rate is None and total_additive == 0.0:
+        return None  # no usable rate content
+
+    return {
+        "hts_code": hts_code,
+        "ch99_country": country,
+        "ch99_newrate": best_floor_rate,
+        "ch99_rate_modifier": "Floor" if best_floor_rate is not None else "",
+        "ch99_additional_pct": total_additive,
+        "ch99_tradeprogram": tradeprogram,
+        "ch99_match_priority": int(candidates.iloc[0]["ch99_match_priority"]),
+    }
 
 
 def apply_ch99_to_duty(
@@ -598,10 +694,19 @@ def apply_ch99_to_duty(
     raw_newrate   = ch99.get("ch99_newrate")
     raw_additional = ch99.get("ch99_additional_pct")
 
-    # Safe numeric conversions with None guards
+    # Safe numeric conversions — treat None AND pandas NaN as "no rate"
+    def _to_float_or_none(v: object) -> float | None:
+        if v is None:
+            return None
+        try:
+            f = float(v)
+            return None if f != f else f  # NaN check: NaN != NaN
+        except (TypeError, ValueError):
+            return None
+
     try:
-        newrate = float(raw_newrate) if raw_newrate is not None else None
-    except (TypeError, ValueError):
+        newrate = _to_float_or_none(raw_newrate)
+    except Exception:
         newrate = None
 
     try:
@@ -610,9 +715,13 @@ def apply_ch99_to_duty(
         additional = 0.0
 
     if modifier == "Floor":
-        # Both base_av and newrate are in percentage-point scale here — no conversion
-        if base_av is not None and newrate is not None:
-            return max(base_av, newrate)
+        # Floor: effective = max(base + additive, floor_rate)
+        # Both base_av and newrate are in percentage-point scale; additional is decimal fraction.
+        if base_av is not None:
+            base_with_additive = base_av + (additional * 100)
+            if newrate is not None:
+                return max(base_with_additive, newrate)
+            return base_with_additive
         return base_av
 
     if newrate is not None:
