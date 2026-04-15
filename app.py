@@ -51,7 +51,7 @@ DEFAULT_COUNTRY_SELECTION = [
 ]
 SUMMARY_SAMPLE_LIMIT = 60
 MAX_COUNTRY_SELECTION = 3
-MAX_PRODUCT_SELECTION = 3
+MAX_PRODUCT_SELECTION = 1
 
 GENERAL_DUTY_PATTERN = re.compile(r"-?\d+(?:\.\d+)?")
 
@@ -638,12 +638,14 @@ def build_correlation_dataframe(
     if country_subset.empty:
         return pd.DataFrame(), []
 
+    # Accept both ad_valorem and specific rates; only exclude truly unparseable text rates.
     valid_products = tariff_df[
-        (tariff_df["duty_kind"] == "ad_valorem") & tariff_df["ad_valorem_rate"].notna()
+        (
+            ((tariff_df["duty_kind"] == "ad_valorem") & tariff_df["ad_valorem_rate"].notna())
+            | ((tariff_df["duty_kind"] == "specific") & tariff_df["specific_amount"].notna())
+        )
     ].copy()
-    excluded_mask = ~(
-        (tariff_df["duty_kind"] == "ad_valorem") & tariff_df["ad_valorem_rate"].notna()
-    )
+    excluded_mask = tariff_df["duty_kind"] == "text"
     excluded_records = tariff_df.loc[excluded_mask, ["hts_code", "description", "general_duty_rate_text", "duty_kind"]]
     exclusions = excluded_records.to_dict("records")
 
@@ -670,7 +672,9 @@ def build_correlation_dataframe(
         ch99_applied = False
         ch99_tradeprogram = None
 
-        if ch99_available:
+        # Ch99 effective-rate adjustment applies only to ad_valorem base rates.
+        # Specific rates ($/kg etc.) cannot be meaningfully adjusted by a percentage modifier.
+        if ch99_available and base_rate.kind == "ad_valorem":
             rule = _best_ch99_rule(ch99_df, hts_code, country)
             if rule is not None:
                 effective_rate = apply_ch99_to_duty(base_rate, rule)
@@ -685,8 +689,11 @@ def build_correlation_dataframe(
                 "country_color": country_meta["color"],
                 "hts_code": hts_code,
                 "product_description": product_meta["description"],
+                "duty_kind": base_rate.kind,
                 "base_duty_pct": base_av,
                 "ad_valorem_rate": effective_rate,
+                "specific_amount": base_rate.specific_amount,
+                "specific_unit": base_rate.specific_unit,
                 "general_duty_rate_text": product_meta["general_duty_rate_text"],
                 "ch99_applied": ch99_applied,
                 "ch99_tradeprogram": ch99_tradeprogram,
@@ -723,18 +730,68 @@ def append_message(message: dict) -> None:
     st.session_state["chat_scroll_token"] = st.session_state.get("chat_scroll_token", 0) + 1
 
 
-def render_correlation_chart(df: pd.DataFrame) -> go.Figure | None:
+def render_correlation_chart(df: pd.DataFrame, mode: str = "ad_valorem") -> go.Figure | None:
+    """Render the risk-vs-duty scatterplot.
+
+    mode='ad_valorem' — Y axis = effective ad valorem rate (%, ch99-adjusted where applicable)
+    mode='specific'   — Y axis = specific duty amount ($/kg, ¢/dozen, etc.)
+    """
     if df.empty:
         return None
 
     df = df.copy()
-
-    # Display columns for hover
-    df["Rate Source"] = df["ch99_applied"].map({True: "Ch.99 adjusted", False: "Base rate"})
     df["Trade Program"] = df["ch99_tradeprogram"].fillna("—")
     df["Base Rate"] = df["general_duty_rate_text"]
 
-    # Delta column — how much ch99 moved the rate (only meaningful when adjusted)
+    if mode == "specific":
+        plot_df = df[df["specific_amount"].notna()].copy()
+        if plot_df.empty:
+            return None
+
+        units = plot_df["specific_unit"].dropna().unique()
+        unit_label = units[0].strip() if len(units) == 1 else "unit"
+
+        fig = px.scatter(
+            plot_df,
+            x="risk_score",
+            y="specific_amount",
+            color="country",
+            hover_name="product_description",
+            hover_data={
+                "country": True,
+                "risk_score": ":.1f",
+                "risk_level": True,
+                "hts_code": True,
+                "Base Rate": True,
+                "specific_amount": ":.4f",
+                "Trade Program": True,
+                "product_description": False,
+                "general_duty_rate_text": False,
+                "ch99_tradeprogram": False,
+                "country_color": False,
+                "risk_level": False,
+            },
+            labels={
+                "risk_score": "Country Risk Score",
+                "specific_amount": f"Duty Amount ({unit_label})",
+            },
+        )
+        fig.update_layout(
+            xaxis_title="Country Risk Score",
+            yaxis_title=f"Specific Duty Rate ({unit_label})",
+            legend_title="Country",
+            template="plotly_white",
+            margin=dict(l=10, r=10, t=40, b=10),
+        )
+        fig.update_traces(marker={"size": 12, "line": {"width": 1.5, "color": "rgba(0,0,0,0.25)"}})
+        return fig
+
+    # --- ad_valorem mode ---
+    plot_df = df[df["ad_valorem_rate"].notna()].copy()
+    if plot_df.empty:
+        return None
+
+    # Delta column — how much ch99 moved the rate
     def _delta_label(row: dict) -> str:
         if not row["ch99_applied"]:
             return "—"
@@ -746,14 +803,14 @@ def render_correlation_chart(df: pd.DataFrame) -> go.Figure | None:
         sign  = "+" if delta >= 0 else ""
         return f"{sign}{delta:.2f}%"
 
-    df["Ch.99 Δ"] = df.apply(_delta_label, axis=1)
+    plot_df["Rate Source"] = plot_df["ch99_applied"].map({True: "Ch.99 adjusted", False: "Base rate"})
+    plot_df["Ch.99 Δ"] = plot_df.apply(_delta_label, axis=1)
 
     fig = px.scatter(
-        df,
+        plot_df,
         x="risk_score",
         y="ad_valorem_rate",
         color="country",
-        symbol="hts_code",
         hover_name="product_description",
         hover_data={
             "country": True,
@@ -765,7 +822,6 @@ def render_correlation_chart(df: pd.DataFrame) -> go.Figure | None:
             "Rate Source": True,
             "Trade Program": True,
             "Ch.99 Δ": True,
-            # suppress raw columns already represented above
             "product_description": False,
             "general_duty_rate_text": False,
             "ch99_applied": False,
@@ -779,20 +835,17 @@ def render_correlation_chart(df: pd.DataFrame) -> go.Figure | None:
             "ad_valorem_rate": "Effective Duty Rate (%)",
         },
     )
-
     fig.update_layout(
         xaxis_title="Country Risk Score",
         yaxis_title="Effective Duty Rate (% ad valorem)",
-        legend_title="Country / HTS Code",
+        legend_title="Country",
         template="plotly_white",
         margin=dict(l=10, r=10, t=40, b=10),
     )
-
-    # Base marker style for all points
     fig.update_traces(marker={"size": 12, "line": {"width": 1.5, "color": "rgba(0,0,0,0.25)"}})
 
-    # Orange ring overlay on every ch99-adjusted point so they stand out
-    adjusted = df[df["ch99_applied"]]
+    # Orange ring overlay on ch99-adjusted points
+    adjusted = plot_df[plot_df["ch99_applied"]]
     if not adjusted.empty:
         fig.add_trace(
             go.Scatter(
@@ -887,6 +940,8 @@ def queue_analysis_request(
         "products": list(selected_products),
         "signature": signature,
     }
+    # Reset chart mode so the new analysis always opens in ad_valorem view
+    st.session_state["chart_mode"] = "ad_valorem"
     return True
 
 
@@ -966,6 +1021,13 @@ def maybe_run_analysis(
             else:
                 fig = render_correlation_chart(corr_df)
                 summary_text = stream_analysis_to_placeholder(corr_df, deployment_id, placeholder)
+                n_adjusted = int(corr_df["ch99_applied"].sum()) if "ch99_applied" in corr_df.columns else 0
+                n_total = len(corr_df)
+                ch99_programs = (
+                    corr_df.loc[corr_df["ch99_applied"], "ch99_tradeprogram"]
+                    .dropna().unique().tolist()
+                    if "ch99_applied" in corr_df.columns else []
+                )
                 append_message(
                     {
                         "role": "assistant",
@@ -982,6 +1044,15 @@ def maybe_run_analysis(
                         },
                         "duty_exclusions": duty_exclusions,
                         "duty_exclusion_message": exclusion_message,
+                        "ch99_summary": {
+                            "n_adjusted": n_adjusted,
+                            "n_total": n_total,
+                            "programs": ch99_programs,
+                        },
+                        "has_specific_data": (
+                            "specific_amount" in corr_df.columns
+                            and corr_df["specific_amount"].notna().any()
+                        ),
                     }
                 )
             st.session_state["correlation_signature"] = signature
@@ -1061,7 +1132,7 @@ def main() -> None:
     if "messages" not in st.session_state:
         st.session_state.messages = []
     st.session_state.setdefault(LAST_RESULT_KEY, None)
-    st.session_state.setdefault("selected_countries", country_options[:MAX_COUNTRY_SELECTION] or DEFAULT_COUNTRY_SELECTION.copy())
+    st.session_state.setdefault("selected_countries", [])
     st.session_state.setdefault("selected_products_display", [])
     st.session_state.setdefault("selected_product_codes", [])
     st.session_state.setdefault("analysis_inflight", False)
@@ -1069,11 +1140,6 @@ def main() -> None:
     st.session_state.setdefault("analysis_request", None)
     st.session_state.setdefault("correlation_signature", None)
     st.session_state.setdefault("chat_scroll_token", 0)
-
-    if not st.session_state["selected_countries"]:
-        st.session_state["selected_countries"] = country_options[:MAX_COUNTRY_SELECTION] or DEFAULT_COUNTRY_SELECTION.copy()
-    if not st.session_state["selected_products_display"] and display_options:
-        st.session_state["selected_products_display"] = display_options[: min(MAX_PRODUCT_SELECTION, len(display_options))]
 
     selected_countries, country_trimmed = enforce_selection_limit(
         "selected_countries",
@@ -1094,10 +1160,6 @@ def main() -> None:
         st.caption(
             "Responses are deterministic: the SQL output is re-run each time against the local database."
         )
-        st.markdown("<hr>", unsafe_allow_html=True)
-        if st.button("Clear Chat", width="stretch", key="sidebar_clear"):
-            reset_app_state()
-            st.rerun()
         st.markdown("<hr>", unsafe_allow_html=True)
         st.markdown("### About")
         st.caption("ImportInsight AI translates your prompt into SQL and returns the actual HTS rows.")
@@ -1169,6 +1231,31 @@ def main() -> None:
                 st.warning("Select at least one country and one product before running analysis.")
         if st.session_state.get("analysis_inflight"):
             st.caption("Running analysis…")
+
+        # Chart mode toggle — persists across reruns so switching is instant
+        st.session_state.setdefault("chart_mode", "ad_valorem")
+        # Determine whether the most recent analysis has specific-rate data
+        _last_analysis = next(
+            (m for m in reversed(st.session_state.get("messages", []))
+             if m.get("type") == "analysis"),
+            None,
+        )
+        _has_specific = bool(_last_analysis and _last_analysis.get("has_specific_data"))
+        _toggle_help = (
+            "Switch the Y axis between the ad valorem percentage rate and the specific duty amount (e.g. $/kg, ¢/dozen)."
+            if _has_specific
+            else "This product has a percentage-based rate only. Select a product with a unit-based rate (e.g. $/kg, ¢/liter) to use this view."
+        )
+        if not _has_specific:
+            st.session_state["chart_mode"] = "ad_valorem"
+        show_specific = st.toggle(
+            "Show specific duty rate ($/unit)",
+            value=(st.session_state["chart_mode"] == "specific"),
+            disabled=not _has_specific,
+            help=_toggle_help,
+        )
+        if _has_specific:
+            st.session_state["chart_mode"] = "specific" if show_specific else "ad_valorem"
     analysis_stream_placeholder: st.delta_generator.DeltaGenerator | None = None
     chat_feed = st.container()
     composer = st.container()
@@ -1225,30 +1312,129 @@ def main() -> None:
                     "<div class='bubble-label'>Assistant</div>",
                     unsafe_allow_html=True,
                 )
+
+                # --- metadata: countries + product descriptions ---
                 selections = msg.get("selections", {})
                 selection_text = []
                 if selections.get("countries"):
                     selection_text.append("Countries: " + ", ".join(selections["countries"]))
                 if selections.get("products"):
-                    selection_text.append("Products: " + ", ".join(selections["products"]))
+                    # Resolve raw HTS codes to human-readable descriptions via code_map
+                    descs = [
+                        code_map.get(
+                            next((lbl for lbl in code_map if code_map[lbl] == c), ""),
+                            c,
+                        )
+                        for c in selections["products"]
+                    ]
+                    # code_map keys are "CODE — description"; extract description part
+                    readable = []
+                    for raw_code in selections["products"]:
+                        match = next(
+                            (lbl for lbl, code in code_map.items() if code == raw_code),
+                            None,
+                        )
+                        readable.append(match.split(" — ", 1)[-1] if match else raw_code)
+                    selection_text.append("Products: " + ", ".join(readable))
                 if selection_text:
                     st.markdown(
                         f"<div class='analysis-meta'>{' · '.join(selection_text)}</div>",
                         unsafe_allow_html=True,
                     )
-                fig_payload = msg.get("plotly_fig")
-                if fig_payload:
-                    fig = go.Figure(fig_payload)
-                    st.plotly_chart(fig, width="stretch")
+
+                # --- scatterplot (rebuilt live so the toggle takes effect instantly) ---
+                _chart_data = msg.get("chart_data")
+                _chart_cols = msg.get("chart_columns")
+                if _chart_data and _chart_cols:
+                    _chart_df = pd.DataFrame(_chart_data, columns=_chart_cols)
+                    _mode = st.session_state.get("chart_mode", "ad_valorem")
+                    fig = render_correlation_chart(_chart_df, mode=_mode)
+                    if fig:
+                        st.plotly_chart(fig, use_container_width=True)
+                        if _mode == "ad_valorem":
+                            st.caption(
+                                "Orange ring = effective rate modified by a Chapter 99 surcharge or trade program override."
+                            )
+                        else:
+                            st.caption(
+                                "Y axis shows the specific duty amount from the HTS table. "
+                                "Ch.99 percentage surcharges are not applied in this view."
+                            )
+                    else:
+                        _mode_label = "specific rate" if _mode == "specific" else "ad valorem rate"
+                        st.info(
+                            f"No {_mode_label} data available for this product. "
+                            "Try switching the toggle above."
+                        )
+
+                # --- Fix 4: ch99 adjustment callout ---
+                ch99_summary = msg.get("ch99_summary")
+                if ch99_summary and ch99_summary.get("n_adjusted", 0) > 0:
+                    n_adj = ch99_summary["n_adjusted"]
+                    n_tot = ch99_summary["n_total"]
+                    programs = ch99_summary.get("programs") or []
+                    prog_str = (
+                        " — " + ", ".join(sorted(set(programs))) if programs else ""
+                    )
+                    st.info(
+                        f"Chapter 99 adjustments applied to **{n_adj} of {n_tot}** data points{prog_str}."
+                    )
+
+                # --- AI narrative bubble ---
                 st.markdown(
-                    f"<div class='bubble-bot'>{msg['content']}</div><div class='timestamp'>{timestamp}</div><div class='clearfix'></div>",
+                    f"<div class='bubble-bot'>{msg['content']}</div>"
+                    f"<div class='timestamp'>{timestamp}</div>"
+                    "<div class='clearfix'></div>",
                     unsafe_allow_html=True,
                 )
-                duty_exclusions = msg.get("duty_exclusions") or []
+
+                # --- risk pills ---
+                risk_snapshot = msg.get("risk_snapshot") or []
+                if risk_snapshot:
+                    pills_html = "".join(
+                        f"<div class='risk-pill' style='border-left-color:{snap['color']};'>"
+                        f"<strong>{snap['country']}</strong> "
+                        f"Score {snap['score']:.1f} · {snap['level']}"
+                        "</div>"
+                        for snap in risk_snapshot
+                    )
+                    st.markdown(f"<div class='risk-pills'>{pills_html}</div>", unsafe_allow_html=True)
+
+                # --- Fix 1: clean summary table (replaces raw corr_df dump) ---
+                chart_data = msg.get("chart_data")
+                if chart_data:
+                    raw_df = pd.DataFrame(chart_data, columns=msg.get("chart_columns"))
+                    display_cols = {
+                        "country": "Country",
+                        "risk_score": "Risk Score",
+                        "hts_code": "HTS Code",
+                        "product_description": "Product",
+                        "general_duty_rate_text": "Base Rate",
+                        "ad_valorem_rate": "Effective Rate (%)",
+                        "ch99_tradeprogram": "Trade Program",
+                    }
+                    available = [c for c in display_cols if c in raw_df.columns]
+                    summary_df = raw_df[available].rename(columns=display_cols).copy()
+                    if "Effective Rate (%)" in summary_df.columns:
+                        summary_df["Effective Rate (%)"] = (
+                            summary_df["Effective Rate (%)"]
+                            .apply(lambda v: f"{v:.2f}%" if pd.notna(v) else "—")
+                        )
+                    if "Trade Program" in summary_df.columns:
+                        summary_df["Trade Program"] = summary_df["Trade Program"].fillna("—")
+                    if "Risk Score" in summary_df.columns:
+                        summary_df["Risk Score"] = (
+                            summary_df["Risk Score"]
+                            .apply(lambda v: f"{v:.1f}" if pd.notna(v) else "—")
+                        )
+                    st.dataframe(summary_df, hide_index=True, use_container_width=True)
+
+                # --- duty exclusion warning ---
                 exclusion_text = msg.get("duty_exclusion_message")
                 if exclusion_text:
                     st.warning(exclusion_text)
-                elif duty_exclusions:
+                elif msg.get("duty_exclusions"):
+                    duty_exclusions = msg["duty_exclusions"]
                     listed = ", ".join(
                         f"{item.get('hts_code')} ({item.get('general_duty_rate_text')})"
                         for item in duty_exclusions[:3]
@@ -1256,23 +1442,7 @@ def main() -> None:
                     if len(duty_exclusions) > 3:
                         listed += f", +{len(duty_exclusions) - 3} more"
                     st.warning(f"Skipped non-percentage duty rates: {listed}")
-                risk_snapshot = msg.get("risk_snapshot") or []
-                if risk_snapshot:
-                    pills_html = "".join(
-                        f"<div class='risk-pill' style='border-left-color:{snap['color']};'>"
-                        f"<strong>{snap['country']}</strong>"
-                        f"Score {snap['score']:.1f} · {snap['level']}"
-                        "</div>"
-                        for snap in risk_snapshot
-                    )
-                    st.markdown(f"<div class='risk-pills'>{pills_html}</div>", unsafe_allow_html=True)
-                chart_data = msg.get("chart_data")
-                if chart_data:
-                    chart_df = pd.DataFrame(
-                        chart_data,
-                        columns=msg.get("chart_columns"),
-                    )
-                    st.dataframe(chart_df)
+
                 continue
 
             st.markdown(
@@ -1283,18 +1453,21 @@ def main() -> None:
         analysis_stream_placeholder = st.empty()
         latest_result = st.session_state.get(LAST_RESULT_KEY)
         if latest_result:
-            st.markdown("---")
-            st.markdown("### Last SQL Result")
-            st.code(latest_result["sql"], language="sql")
-            st.caption(
-                f"Returned {latest_result['row_count']} row(s); showing {latest_result['rows_displayed']} row(s) below."
-            )
-            if latest_result["records"]:
-                st.dataframe(
-                    pd.DataFrame(latest_result["records"], columns=latest_result["columns"])
+            with st.expander(
+                f"Last SQL Result — {latest_result['row_count']} row(s) returned",
+                expanded=False,
+            ):
+                st.code(latest_result["sql"], language="sql")
+                st.caption(
+                    f"Showing {latest_result['rows_displayed']} of {latest_result['row_count']} row(s)."
                 )
-            else:
-                st.info("The last query returned no rows.")
+                if latest_result["records"]:
+                    st.dataframe(
+                        pd.DataFrame(latest_result["records"], columns=latest_result["columns"]),
+                        use_container_width=True,
+                    )
+                else:
+                    st.info("The last query returned no rows.")
         st.markdown('<div data-anchor="chat-end" id="chat-end"></div>', unsafe_allow_html=True)
 
     if analysis_stream_placeholder is None:

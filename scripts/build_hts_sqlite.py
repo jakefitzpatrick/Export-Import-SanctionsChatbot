@@ -43,7 +43,14 @@ WITH matched AS (
         CAST(c.MATCH_PRIORITY AS INTEGER)                  AS ch99_match_priority,
         ROW_NUMBER() OVER (
             PARTITION BY m.hts_code, c.COUNTRY
-            ORDER BY CAST(c.MATCH_PRIORITY AS INTEGER) ASC
+            ORDER BY
+                CAST(c.MATCH_PRIORITY AS INTEGER) ASC,
+                -- Within same priority, prefer rows with actual rate content:
+                -- Floor rows first (they express the clearest intent),
+                -- then replacement rates, then additive surcharges, then blanks last.
+                CASE c.RATE_MODIFIER WHEN 'Floor' THEN 0 ELSE 1 END ASC,
+                CASE WHEN c.NEWRATE_CLEAN != '' AND c.NEWRATE_CLEAN IS NOT NULL THEN 0 ELSE 1 END ASC,
+                CASE WHEN c.ADDITIONAL_DUTY_PCT != '' AND c.ADDITIONAL_DUTY_PCT IS NOT NULL THEN 0 ELSE 1 END ASC
         ) AS _rn
     FROM hts AS m
     JOIN chapter_99 AS c
