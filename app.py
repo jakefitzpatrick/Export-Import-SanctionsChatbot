@@ -13,6 +13,7 @@ import itertools
 from pathlib import Path
 
 from dotenv import load_dotenv
+import numpy as np
 import openai
 import pandas as pd
 import plotly.express as px
@@ -730,6 +731,298 @@ def append_message(message: dict) -> None:
     st.session_state["chat_scroll_token"] = st.session_state.get("chat_scroll_token", 0) + 1
 
 
+# ---------------------------------------------------------------------------
+# Trade-flow map
+# ---------------------------------------------------------------------------
+
+# Country name (as used in the app/HTS data) → (ISO-3 code, latitude, longitude)
+# Includes all names from the risk-model dropdown AND the Ch99 database.
+# Aliases (same ISO, different name) are intentional — choropleth deduplicates by ISO.
+COUNTRY_GEO: dict[str, tuple[str, float, float]] = {
+    "Afghanistan": ("AFG", 33.9, 67.7), "Albania": ("ALB", 41.2, 20.2),
+    "Algeria": ("DZA", 28.0, 1.7), "Andorra": ("AND", 42.5, 1.5),
+    "Angola": ("AGO", -11.2, 17.9), "Antigua and Barbuda": ("ATG", 17.1, -61.8),
+    "Argentina": ("ARG", -38.4, -63.6), "Armenia": ("ARM", 40.1, 45.0),
+    "Australia": ("AUS", -25.0, 133.0), "Austria": ("AUT", 47.5, 14.6),
+    "Azerbaijan": ("AZE", 40.1, 47.6), "Bahamas": ("BHS", 25.0, -77.3),
+    "Bahrain": ("BHR", 26.0, 50.6), "Bangladesh": ("BGD", 24.0, 90.0),
+    "Barbados": ("BRB", 13.2, -59.6), "Belarus": ("BLR", 53.7, 28.0),
+    "Belgium": ("BEL", 50.8, 4.5), "Belize": ("BLZ", 17.2, -88.5),
+    "Benin": ("BEN", 9.3, 2.3), "Bhutan": ("BTN", 27.5, 90.4),
+    "Bolivia": ("BOL", -16.3, -64.5), "Bosnia and Herzegovina": ("BIH", 44.2, 17.8),
+    "Botswana": ("BWA", -22.3, 24.7), "Brazil": ("BRA", -14.2, -51.9),
+    "Brunei": ("BRN", 4.5, 114.7), "Bulgaria": ("BGR", 42.7, 25.5),
+    "Burkina Faso": ("BFA", 12.4, -1.6),
+    "Burma": ("MMR", 17.1, 96.0),                  # Ch99 spelling
+    "Burma/Myanmar": ("MMR", 17.1, 96.0),           # risk-model spelling
+    "Myanmar": ("MMR", 17.1, 96.0),                 # alternate spelling
+    "Burundi": ("BDI", -3.4, 30.0), "Cambodia": ("KHM", 12.6, 104.9),
+    "Cameroon": ("CMR", 5.7, 12.4), "Canada": ("CAN", 60.0, -96.0),
+    "Cape Verde": ("CPV", 15.1, -23.6), "Central African Republic": ("CAF", 6.6, 20.9),
+    "Chad": ("TCD", 15.5, 18.7), "Chile": ("CHL", -35.7, -71.5),
+    "China": ("CHN", 35.9, 104.2), "Colombia": ("COL", 4.1, -72.3),
+    "Comoros": ("COM", -11.6, 43.3), "Costa Rica": ("CRI", 9.7, -83.8),
+    "Cote d'Ivoire": ("CIV", 7.5, -5.5),            # Ch99 spelling
+    "Ivory Coast": ("CIV", 7.5, -5.5),              # risk-model spelling
+    "Croatia": ("HRV", 45.1, 15.2),
+    "Cyprus": ("CYP", 35.1, 33.4), "Czech Republic": ("CZE", 49.8, 15.5),
+    "DR Congo": ("COD", -4.0, 21.8),                # Ch99 spelling
+    "Democratic Republic of the Congo": ("COD", -4.0, 21.8),  # risk-model spelling
+    "Republic of the Congo": ("COG", -0.2, 15.8),   # risk-model (different country)
+    "Denmark": ("DNK", 56.3, 9.5), "Djibouti": ("DJI", 11.8, 42.6),
+    "Dominica": ("DMA", 15.4, -61.4), "Dominican Republic": ("DOM", 18.7, -70.2),
+    "Ecuador": ("ECU", -1.8, -78.2), "Egypt": ("EGY", 26.8, 30.8),
+    "El Salvador": ("SLV", 13.8, -88.9), "Equatorial Guinea": ("GNQ", 1.7, 10.3),
+    "Eritrea": ("ERI", 15.2, 39.8), "Estonia": ("EST", 58.6, 25.0),
+    "Ethiopia": ("ETH", 9.1, 40.5), "Falkland Islands": ("FLK", -51.8, -59.5),
+    "Fiji": ("FJI", -17.7, 178.1), "Finland": ("FIN", 64.0, 26.0),
+    "France": ("FRA", 46.2, 2.2), "Gabon": ("GAB", -0.8, 11.6),
+    "Gambia": ("GMB", 13.4, -15.3),                 # Ch99 spelling
+    "The Gambia": ("GMB", 13.4, -15.3),             # risk-model spelling
+    "Georgia": ("GEO", 42.3, 43.4), "Germany": ("DEU", 51.2, 10.5),
+    "Ghana": ("GHA", 7.9, -1.0), "Greece": ("GRC", 39.1, 21.8),
+    "Grenada": ("GRD", 12.1, -61.7), "Guatemala": ("GTM", 15.8, -90.2),
+    "Guinea": ("GIN", 11.0, -10.9), "Guinea-Bissau": ("GNB", 11.8, -15.2),
+    "Guyana": ("GUY", 4.9, -58.9), "Haiti": ("HTI", 19.0, -72.3),
+    "Honduras": ("HND", 15.2, -86.2), "Hong Kong": ("HKG", 22.3, 114.2),
+    "Hungary": ("HUN", 47.2, 19.5), "Iceland": ("ISL", 64.9, -18.7),
+    "India": ("IND", 20.6, 79.0), "Indonesia": ("IDN", -0.8, 113.9),
+    "Iran": ("IRN", 32.4, 53.7), "Iraq": ("IRQ", 33.2, 43.7),
+    "Ireland": ("IRL", 53.4, -8.2), "Israel": ("ISR", 31.0, 35.0),
+    "Italy": ("ITA", 41.9, 12.6), "Jamaica": ("JAM", 18.1, -77.3),
+    "Japan": ("JPN", 36.2, 138.3), "Jordan": ("JOR", 30.6, 36.2),
+    "Kazakhstan": ("KAZ", 48.0, 67.3), "Kenya": ("KEN", -0.1, 37.9),
+    "Kiribati": ("KIR", -3.4, -168.7), "Kosovo": ("XKX", 42.6, 20.9),
+    "Kuwait": ("KWT", 29.3, 47.5), "Kyrgyzstan": ("KGZ", 41.2, 74.8),
+    "Laos": ("LAO", 19.9, 102.5), "Latvia": ("LVA", 56.9, 24.6),
+    "Lebanon": ("LBN", 33.9, 35.9), "Lesotho": ("LSO", -29.6, 28.2),
+    "Liberia": ("LBR", 6.4, -9.4), "Libya": ("LBY", 26.3, 17.2),
+    "Liechtenstein": ("LIE", 47.2, 9.5), "Lithuania": ("LTU", 55.2, 24.0),
+    "Luxembourg": ("LUX", 49.8, 6.1), "Macau": ("MAC", 22.2, 113.5),
+    "Macedonia": ("MKD", 41.6, 21.7), "North Macedonia": ("MKD", 41.6, 21.7),
+    "Madagascar": ("MDG", -18.8, 46.9), "Malawi": ("MWI", -13.3, 34.3),
+    "Malaysia": ("MYS", 4.2, 108.0), "Maldives": ("MDV", 3.2, 73.2),
+    "Mali": ("MLI", 17.6, -4.0), "Malta": ("MLT", 35.9, 14.4),
+    "Marshall Islands": ("MHL", 7.1, 171.2), "Mauritania": ("MRT", 21.0, -10.9),
+    "Mauritius": ("MUS", -20.3, 57.6), "Mexico": ("MEX", 23.6, -102.6),
+    "Micronesia": ("FSM", 7.4, 150.6), "Moldova": ("MDA", 47.4, 28.4),
+    "Monaco": ("MCO", 43.7, 7.4), "Mongolia": ("MNG", 46.9, 103.8),
+    "Montenegro": ("MNE", 42.7, 19.4), "Morocco": ("MAR", 31.8, -7.1),
+    "Mozambique": ("MOZ", -18.7, 35.5), "Namibia": ("NAM", -22.9, 18.5),
+    "Nauru": ("NRU", -0.5, 166.9), "Nepal": ("NPL", 28.4, 84.1),
+    "Netherlands": ("NLD", 52.1, 5.3), "New Zealand": ("NZL", -40.9, 174.9),
+    "Nicaragua": ("NIC", 12.9, -85.2), "Niger": ("NER", 17.6, 8.1),
+    "Nigeria": ("NGA", 9.1, 8.7), "North Korea": ("PRK", 40.3, 127.5),
+    "Norway": ("NOR", 60.5, 8.5), "Oman": ("OMN", 21.5, 55.9),
+    "Pakistan": ("PAK", 30.4, 69.3), "Palau": ("PLW", 7.5, 134.6),
+    "Palestine/West Bank": ("PSE", 31.9, 35.2), "Panama": ("PAN", 8.4, -80.1),
+    "Papua New Guinea": ("PNG", -6.3, 143.9), "Paraguay": ("PRY", -23.4, -58.4),
+    "Peru": ("PER", -9.2, -75.0), "Philippines": ("PHL", 12.9, 121.8),
+    "Poland": ("POL", 51.9, 19.1), "Portugal": ("PRT", 39.4, -8.2),
+    "Qatar": ("QAT", 25.4, 51.2), "Romania": ("ROU", 45.9, 24.9),
+    "Russia": ("RUS", 61.5, 105.3), "Rwanda": ("RWA", -1.9, 29.9),
+    "Saint Kitts and Nevis": ("KNA", 17.4, -62.8), "Saint Lucia": ("LCA", 13.9, -60.9),
+    "Saint Vincent and the Grenadines": ("VCT", 13.3, -61.2),
+    "Samoa": ("WSM", -13.8, -172.1), "San Marino": ("SMR", 43.9, 12.5),
+    "Sao Tome and Principe": ("STP", 0.2, 6.6), "Saudi Arabia": ("SAU", 24.0, 45.0),
+    "Senegal": ("SEN", 14.5, -14.5), "Serbia": ("SRB", 44.0, 21.0),
+    "Seychelles": ("SYC", -4.7, 55.5), "Sierra Leone": ("SLE", 8.5, -11.8),
+    "Singapore": ("SGP", 1.4, 103.8), "Slovakia": ("SVK", 48.7, 19.7),
+    "Slovenia": ("SVN", 46.2, 15.0), "Solomon Islands": ("SLB", -9.6, 160.2),
+    "Somalia": ("SOM", 5.2, 46.2), "South Africa": ("ZAF", -30.6, 22.9),
+    "South Korea": ("KOR", 35.9, 127.8), "South Sudan": ("SSD", 6.9, 31.3),
+    "Spain": ("ESP", 40.5, -3.7), "Sri Lanka": ("LKA", 7.9, 80.8),
+    "Sudan": ("SDN", 12.9, 30.2), "Suriname": ("SUR", 3.9, -56.0),
+    "Swaziland": ("SWZ", -26.5, 31.5), "Sweden": ("SWE", 60.1, 18.6),
+    "Switzerland": ("CHE", 47.0, 8.2), "Syria": ("SYR", 34.8, 38.9),
+    "Taiwan": ("TWN", 23.7, 120.9), "Tanzania": ("TZA", -6.4, 34.9),
+    "Thailand": ("THA", 15.9, 100.9), "Timor-Leste": ("TLS", -8.9, 125.7),
+    "Togo": ("TGO", 8.6, 0.8), "Tonga": ("TON", -21.2, -175.2),
+    "Trinidad and Tobago": ("TTO", 10.7, -61.2), "Tunisia": ("TUN", 33.9, 9.6),
+    "Turkey": ("TUR", 38.6, 35.2),                  # Ch99 spelling
+    "Türkiye": ("TUR", 38.6, 35.2),                 # risk-model spelling
+    "Tuvalu": ("TUV", -8.5, 179.2), "Uganda": ("UGA", 1.4, 32.3),
+    "Ukraine": ("UKR", 48.4, 31.2), "United Arab Emirates": ("ARE", 23.4, 53.8),
+    "United Kingdom": ("GBR", 55.4, -3.4),
+    "United States": ("USA", 39.5, -98.4),           # Ch99 spelling
+    "United States of America": ("USA", 39.5, -98.4),  # risk-model spelling
+    "Uruguay": ("URY", -32.5, -55.8), "Uzbekistan": ("UZB", 41.4, 64.6),
+    "Vanuatu": ("VUT", -15.4, 166.9), "Venezuela": ("VEN", 6.4, -66.6),
+    "Vietnam": ("VNM", 14.1, 108.3), "Yemen": ("YEM", 15.6, 48.5),
+    "Zambia": ("ZMB", -13.1, 27.9), "Zimbabwe": ("ZWE", -20.0, 30.0),
+}
+
+_USA_LAT, _USA_LON = 39.5, -98.4
+
+
+def _slerp_arc(
+    lat1: float, lon1: float, lat2: float, lon2: float, n: int = 80
+) -> tuple[list[float], list[float]]:
+    """Return (lats, lons) for a great-circle arc from point 1 to point 2."""
+    r = np.radians
+    def to_xyz(la, lo):
+        return np.array([np.cos(r(la)) * np.cos(r(lo)),
+                         np.cos(r(la)) * np.sin(r(lo)),
+                         np.sin(r(la))])
+    v1, v2 = to_xyz(lat1, lon1), to_xyz(lat2, lon2)
+    omega = np.arccos(float(np.clip(np.dot(v1, v2), -1.0, 1.0)))
+    lats, lons = [], []
+    for t in np.linspace(0.0, 1.0, n):
+        if omega < 1e-10:
+            v = v1
+        else:
+            v = (np.sin((1 - t) * omega) * v1 + np.sin(t * omega) * v2) / np.sin(omega)
+        lats.append(float(np.degrees(np.arcsin(np.clip(v[2], -1.0, 1.0)))))
+        lons.append(float(np.degrees(np.arctan2(v[1], v[0]))))
+    return lats, lons
+
+
+@st.cache_data(ttl=60)
+def render_trade_map(selected_countries: tuple[str, ...]) -> go.Figure:
+    """Choropleth with animated comet-trail arcs flowing from selected countries to USA."""
+    N_FRAMES = 50
+    N_ARC = 80
+    TAIL = 10  # comet tail length in points
+
+    sel_set = set(selected_countries)
+    # Canonical USA ISO — any name that maps here gets z=2
+    _USA_ISO = "USA"
+
+    # Build choropleth z-values deduplicated by ISO code.
+    # Multiple names can share an ISO (aliases); keep the highest z so a selected
+    # alias (e.g. "Türkiye") correctly highlights the country.
+    iso_z: dict[str, int] = {}
+    for name, (iso, _la, _lo) in COUNTRY_GEO.items():
+        if iso == _USA_ISO:
+            z = 2
+        elif name in sel_set:
+            z = 1
+        else:
+            z = 0
+        # Take the max z across all aliases for this ISO
+        iso_z[iso] = max(iso_z.get(iso, 0), z)
+
+    iso_list = list(iso_z.keys())
+    z_list   = list(iso_z.values())
+
+    # Compute arcs for each selected country that has geo data (skip USA — it's the destination)
+    arcs: dict[str, tuple[list[float], list[float]]] = {}
+    for country in selected_countries:
+        geo = COUNTRY_GEO.get(country)
+        if geo and geo[0] != _USA_ISO:
+            arcs[country] = _slerp_arc(geo[1], geo[2], _USA_LAT, _USA_LON, N_ARC)
+
+    arc_list = list(arcs.items())
+
+    fig = go.Figure()
+
+    # Layer 1: choropleth
+    fig.add_trace(go.Choropleth(
+        locations=iso_list,
+        z=z_list,
+        locationmode="ISO-3",
+        colorscale=[
+            [0.0, "#1e2030"],   # rest of world
+            [0.5, "#e8733a"],   # selected countries — orange
+            [1.0, "#2b7de9"],   # USA — blue
+        ],
+        zmin=0, zmax=2,
+        showscale=False,
+        marker_line_width=0.4,
+        marker_line_color="#3a3d52",
+        hovertemplate="%{location}<extra></extra>",
+    ))
+
+    # Layer 2: static dashed arc path (full line, always visible)
+    for _country, (lats, lons) in arc_list:
+        fig.add_trace(go.Scattergeo(
+            lat=lats, lon=lons,
+            mode="lines",
+            line=dict(width=1.2, color="rgba(255,255,255,0.18)", dash="dot"),
+            hoverinfo="skip", showlegend=False,
+        ))
+
+    # Layer 3: origin dot markers (one bright dot per country at start position)
+    dot_trace_indices = []
+    for _country, (lats, lons) in arc_list:
+        dot_trace_indices.append(len(fig.data))
+        fig.add_trace(go.Scattergeo(
+            lat=[lats[0]], lon=[lons[0]],
+            mode="markers",
+            marker=dict(size=8, color="#ffcc44", opacity=1.0),
+            hoverinfo="skip", showlegend=False,
+        ))
+
+    # Layer 4: USA destination star (always on top)
+    fig.add_trace(go.Scattergeo(
+        lat=[_USA_LAT], lon=[_USA_LON],
+        mode="markers",
+        marker=dict(size=14, color="#2b7de9", symbol="star",
+                    line=dict(width=1.5, color="white")),
+        hoverinfo="skip", showlegend=False,
+    ))
+
+    # Animation frames — comet tail sweeping from source to USA
+    frames = []
+    for f in range(N_FRAMES):
+        t = f / N_FRAMES          # 0 → <1, loops cleanly
+        head_idx = int(t * (N_ARC - 1))
+        frame_data = []
+        for _country, (lats, lons) in arc_list:
+            tail_start = max(0, head_idx - TAIL + 1)
+            t_lats = lats[tail_start: head_idx + 1]
+            t_lons = lons[tail_start: head_idx + 1]
+            n_tail = len(t_lats)
+            sizes  = [3 + 7 * (i / max(n_tail - 1, 1)) for i in range(n_tail)]
+            alphas = [0.15 + 0.85 * (i / max(n_tail - 1, 1)) for i in range(n_tail)]
+            colors = [f"rgba(255,204,68,{a:.2f})" for a in alphas]
+            frame_data.append(go.Scattergeo(
+                lat=t_lats, lon=t_lons,
+                mode="markers",
+                marker=dict(size=sizes, color=colors, symbol="circle"),
+                hoverinfo="skip",
+            ))
+        frames.append(go.Frame(data=frame_data, traces=dot_trace_indices))
+
+    fig.frames = frames
+
+    # Auto-play button (hidden offscreen so animation starts immediately)
+    play_menu = dict(
+        type="buttons", showactive=False,
+        x=1.05, y=0.5,           # off to the right, invisible in map area
+        xanchor="left", yanchor="middle",
+        buttons=[dict(
+            label="▶",
+            method="animate",
+            args=[None, dict(
+                frame=dict(duration=45, redraw=False),
+                fromcurrent=False,
+                transition=dict(duration=0),
+                mode="immediate",
+            )],
+        )],
+    )
+
+    fig.update_layout(
+        paper_bgcolor="#0f1117",
+        margin=dict(l=0, r=0, t=4, b=0),
+        height=260,
+        geo=dict(
+            bgcolor="#0f1117",
+            showland=True, landcolor="#1e2030",
+            showocean=True, oceancolor="#12141f",
+            showcoastlines=True, coastlinecolor="#2e3148",
+            showcountries=True, countrycolor="#2e3148",
+            showframe=False,
+            projection_type="natural earth",
+            lataxis_range=[-60, 85],
+        ),
+        updatemenus=[play_menu] if arc_list else [],
+    )
+
+    return fig
+
+
 def render_correlation_chart(df: pd.DataFrame, mode: str = "ad_valorem") -> go.Figure | None:
     """Render the risk-vs-duty scatterplot.
 
@@ -1169,6 +1462,50 @@ def main() -> None:
         st.markdown('<div data-context="true"></div>', unsafe_allow_html=True)
         st.markdown("### Context")
         st.caption("Select up to three countries and products to drive the analysis below.")
+
+        # Trade-flow map — updates live as countries are chosen
+        _map_countries = tuple(st.session_state.get("selected_countries", []))
+        _map_fig = render_trade_map(_map_countries)
+        st.plotly_chart(
+            _map_fig,
+            use_container_width=True,
+            config={"staticPlot": False, "displayModeBar": False},
+            key="trade_map",
+        )
+        # Auto-play the arc animation if there are arcs to show
+        if _map_countries:
+            components.html(
+                """<script>
+                (function tryPlay() {
+                    // Walk up from this iframe to find the Plotly chart iframe
+                    var attempts = 0;
+                    function attempt() {
+                        attempts++;
+                        try {
+                            var iframes = window.parent.document.querySelectorAll('iframe[title="trade_map"]');
+                            if (!iframes.length) iframes = window.parent.document.querySelectorAll('.stPlotlyChart iframe');
+                            for (var i = 0; i < iframes.length; i++) {
+                                var inner = iframes[i].contentWindow || iframes[i].contentDocument.defaultView;
+                                var graphs = inner.document.querySelectorAll('.js-plotly-plot');
+                                graphs.forEach(function(g) {
+                                    if (g._fullLayout && g._fullLayout.updatemenus && g._fullLayout.updatemenus.length) {
+                                        Plotly.animate(g, null, {
+                                            frame: {duration: 45, redraw: false},
+                                            transition: {duration: 0},
+                                            mode: 'immediate',
+                                        });
+                                    }
+                                });
+                            }
+                        } catch(e) {}
+                        if (attempts < 20) setTimeout(attempt, 300);
+                    }
+                    setTimeout(attempt, 500);
+                })();
+                </script>""",
+                height=0,
+            )
+
         sel_cols = st.columns(2)
         with sel_cols[0]:
             st.multiselect(
