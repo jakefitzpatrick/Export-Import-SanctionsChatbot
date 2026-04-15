@@ -2,6 +2,8 @@
 Centralized logging configuration for the chatbot system.
 Produces structured logs (JSON or plain) with console and optional file handlers.
 """
+from __future__ import annotations
+
 import os
 import sys
 import logging

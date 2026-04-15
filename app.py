@@ -1,4 +1,6 @@
 """Streamlit text-to-SQL chatbot backed by a local HTS SQLite database."""
+from __future__ import annotations
+
 import json
 import logging
 import os
@@ -85,13 +87,38 @@ class DutyRate:
     notes: str | None = None
 
 
+CH99_COLUMNS = [
+    "NEWCODE",
+    "HTS_MASTER_CODE",
+    "COUNTRY",
+    "NEWRATE",
+    "NEWRATE_CLEAN",
+    "RATE_MODIFIER",
+    "ADDITIONAL_DUTY_PCT",
+    "ADDITIONAL_VALUE",
+    "ADDITIONAL_UNIT",
+    "TRADEPROGRAM",
+    "MATCH_PRIORITY",
+]
+
 SQL_SYSTEM_PROMPT = (
-    "You are a SQL generator for a SQLite database containing a single table named `hts`. "
-    "The available text columns in `hts` are: "
+    "You are a SQL generator for a SQLite database with two tables and one view. "
+    "Table `hts` has columns: "
     + ", ".join(HTS_COLUMNS)
-    + ". Always respond with exactly one valid SQLite SELECT statement. "
+    + ". "
+    "Table `chapter_99` has columns: "
+    + ", ".join(CH99_COLUMNS)
+    + ". "
+    "In `chapter_99`, HTS_MASTER_CODE = 'ALL' matches any product and COUNTRY = 'Global' matches any country. "
+    "Use MATCH_PRIORITY (lower number = higher precedence) to resolve conflicts when multiple rows match. "
+    "View `hts_with_ch99` pre-joins both tables using those wildcard and priority rules and exposes: "
+    "hts_code, chapter, description, full_description, general_duty_rate, special_duty_rate, "
+    "ch99_newcode, ch99_country, ch99_newrate, ch99_rate_modifier, ch99_additional_pct, "
+    "ch99_tradeprogram, ch99_match_priority. "
+    "Always treat HTS codes as TEXT strings — never cast them to integers. "
+    "Always respond with exactly one valid SQLite SELECT statement. "
     "Do not include surrounding markdown, explanations, or additional text. "
-    "The SQL will be executed as-is against the HTS database, so refer only to the columns listed above and avoid modifications (INSERT/UPDATE/DELETE/PRAGMA)."
+    "Only use SELECT statements; avoid INSERT/UPDATE/DELETE/PRAGMA."
 )
 
 SELECT_PATTERN = re.compile(r"SELECT\b.*", re.IGNORECASE | re.DOTALL)
@@ -486,10 +513,123 @@ def fetch_tariffs_for_codes(
     return df
 
 
+def fetch_ch99_for_codes_and_countries(
+    conn: sqlite3.Connection,
+    selected_codes: list[str],
+    selected_countries: list[str],
+) -> pd.DataFrame:
+    """Return the best Chapter 99 rule per (hts_code, queried_country).
+
+    The view hts_with_ch99 already selected the best row per (hts_code,
+    ch99_country bucket).  For each queried country we pull both the
+    country-specific bucket AND the 'Global' bucket, then keep the one
+    with the lower MATCH_PRIORITY (higher precedence).
+    """
+    if not selected_codes or not selected_countries:
+        return pd.DataFrame()
+
+    # Check whether the view exists (DB may have been built without ch99).
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT 1 FROM hts_with_ch99 LIMIT 1")
+    except Exception:
+        return pd.DataFrame()
+
+    code_ph = ",".join(["?"] * len(selected_codes))
+    country_ph = ",".join(["?"] * len(selected_countries))
+    query = f"""
+        SELECT
+            hts_code,
+            ch99_country,
+            CAST(ch99_newrate      AS REAL) AS ch99_newrate,
+            ch99_rate_modifier,
+            COALESCE(CAST(ch99_additional_pct AS REAL), 0.0) AS ch99_additional_pct,
+            ch99_tradeprogram,
+            ch99_match_priority
+        FROM hts_with_ch99
+        WHERE hts_code IN ({code_ph})
+          AND (ch99_country IN ({country_ph}) OR ch99_country = 'Global')
+    """
+    params = selected_codes + selected_countries
+    df = pd.read_sql_query(query, conn, params=params)
+    return df
+
+
+def _best_ch99_rule(
+    ch99_df: pd.DataFrame,
+    hts_code: str,
+    country: str,
+) -> dict | None:
+    """Return the highest-precedence (lowest MATCH_PRIORITY) Chapter 99 row
+    for a given (hts_code, country) pair, considering 'Global' fallback."""
+    if ch99_df.empty:
+        return None
+    mask = ch99_df["hts_code"] == hts_code
+    mask &= (ch99_df["ch99_country"] == country) | (ch99_df["ch99_country"] == "Global")
+    candidates = ch99_df[mask]
+    if candidates.empty:
+        return None
+    best = candidates.loc[candidates["ch99_match_priority"].idxmin()]
+    return best.to_dict()
+
+
+def apply_ch99_to_duty(
+    base_rate: DutyRate,
+    ch99: dict,
+) -> float | None:
+    """Calculate the effective ad-valorem duty rate after applying Chapter 99 logic.
+
+    Scale conventions in the source CSV:
+      - base_rate.ad_valorem_rate : percentage points  (5.0  = 5%)
+      - NEWRATE_CLEAN (Floor rows): percentage points  (15.0 = 15%)
+      - NEWRATE_CLEAN (non-Floor) : decimal fraction   (0.072 = 7.2%) → multiply by 100
+      - ADDITIONAL_DUTY_PCT       : decimal fraction   (0.1  = 10%)  → multiply by 100
+
+    Rules (in order):
+      1. RATE_MODIFIER = 'Floor'  → duty = max(base_rate, NEWRATE_CLEAN)
+                                    both values are in percentage-point scale; no conversion needed
+      2. NEWRATE_CLEAN is a number → duty = NEWRATE_CLEAN * 100  (replaces base)
+      3. Otherwise                 → duty = base_rate + ADDITIONAL_DUTY_PCT * 100
+    """
+    base_av  = base_rate.ad_valorem_rate  # percentage points; None for non-ad-valorem rates
+    modifier = (ch99.get("ch99_rate_modifier") or "").strip()
+
+    raw_newrate   = ch99.get("ch99_newrate")
+    raw_additional = ch99.get("ch99_additional_pct")
+
+    # Safe numeric conversions with None guards
+    try:
+        newrate = float(raw_newrate) if raw_newrate is not None else None
+    except (TypeError, ValueError):
+        newrate = None
+
+    try:
+        additional = float(raw_additional) if raw_additional is not None else 0.0
+    except (TypeError, ValueError):
+        additional = 0.0
+
+    if modifier == "Floor":
+        # Both base_av and newrate are in percentage-point scale here — no conversion
+        if base_av is not None and newrate is not None:
+            return max(base_av, newrate)
+        return base_av
+
+    if newrate is not None:
+        # Non-Floor NEWRATE_CLEAN is a decimal fraction — scale to percentage points
+        return newrate * 100
+
+    if base_av is not None:
+        # ADDITIONAL_DUTY_PCT is a decimal fraction — scale before adding
+        return base_av + (additional * 100)
+
+    return base_av
+
+
 def build_correlation_dataframe(
     selected_countries: list[str],
     tariff_df: pd.DataFrame,
     risk_df: pd.DataFrame,
+    ch99_df: pd.DataFrame | None = None,
 ) -> tuple[pd.DataFrame, list[dict]]:
     if not selected_countries or tariff_df.empty:
         return pd.DataFrame(), []
@@ -510,20 +650,46 @@ def build_correlation_dataframe(
     if valid_products.empty:
         return pd.DataFrame(), exclusions
 
+    # Build a lookup for parsed DutyRate objects keyed by hts_code.
+    parsed_lookup: dict[str, DutyRate] = {}
+    for _, row in valid_products.iterrows():
+        parsed_lookup[row["hts_code"]] = parse_general_duty(row["general_duty_rate_text"])
+
+    ch99_available = ch99_df is not None and not ch99_df.empty
+
     country_records = country_subset.to_dict("records")
     product_records = valid_products.to_dict("records")
     rows = []
     for country_meta, product_meta in itertools.product(country_records, product_records):
+        country = country_meta["country"]
+        hts_code = product_meta["hts_code"]
+        base_rate = parsed_lookup[hts_code]
+        base_av = base_rate.ad_valorem_rate
+
+        effective_rate = base_av
+        ch99_applied = False
+        ch99_tradeprogram = None
+
+        if ch99_available:
+            rule = _best_ch99_rule(ch99_df, hts_code, country)
+            if rule is not None:
+                effective_rate = apply_ch99_to_duty(base_rate, rule)
+                ch99_applied = True
+                ch99_tradeprogram = rule.get("ch99_tradeprogram")
+
         rows.append(
             {
-                "country": country_meta["country"],
+                "country": country,
                 "risk_score": country_meta["score"],
                 "risk_level": country_meta["level"],
                 "country_color": country_meta["color"],
-                "hts_code": product_meta["hts_code"],
+                "hts_code": hts_code,
                 "product_description": product_meta["description"],
-                "ad_valorem_rate": product_meta["ad_valorem_rate"],
+                "base_duty_pct": base_av,
+                "ad_valorem_rate": effective_rate,
                 "general_duty_rate_text": product_meta["general_duty_rate_text"],
+                "ch99_applied": ch99_applied,
+                "ch99_tradeprogram": ch99_tradeprogram,
             }
         )
     return pd.DataFrame(rows), exclusions
@@ -560,30 +726,91 @@ def append_message(message: dict) -> None:
 def render_correlation_chart(df: pd.DataFrame) -> go.Figure | None:
     if df.empty:
         return None
+
+    df = df.copy()
+
+    # Display columns for hover
+    df["Rate Source"] = df["ch99_applied"].map({True: "Ch.99 adjusted", False: "Base rate"})
+    df["Trade Program"] = df["ch99_tradeprogram"].fillna("—")
+    df["Base Rate"] = df["general_duty_rate_text"]
+
+    # Delta column — how much ch99 moved the rate (only meaningful when adjusted)
+    def _delta_label(row: dict) -> str:
+        if not row["ch99_applied"]:
+            return "—"
+        base = row.get("base_duty_pct")
+        eff  = row.get("ad_valorem_rate")
+        if base is None or eff is None:
+            return "—"
+        delta = eff - base
+        sign  = "+" if delta >= 0 else ""
+        return f"{sign}{delta:.2f}%"
+
+    df["Ch.99 Δ"] = df.apply(_delta_label, axis=1)
+
     fig = px.scatter(
         df,
         x="risk_score",
         y="ad_valorem_rate",
         color="country",
         symbol="hts_code",
+        hover_name="product_description",
         hover_data={
             "country": True,
             "risk_score": ":.1f",
             "risk_level": True,
             "hts_code": True,
+            "Base Rate": True,
             "ad_valorem_rate": ":.2f",
-            "general_duty_rate_text": True,
-            "product_description": True,
+            "Rate Source": True,
+            "Trade Program": True,
+            "Ch.99 Δ": True,
+            # suppress raw columns already represented above
+            "product_description": False,
+            "general_duty_rate_text": False,
+            "ch99_applied": False,
+            "ch99_tradeprogram": False,
+            "base_duty_pct": False,
+            "country_color": False,
+            "risk_level": False,
+        },
+        labels={
+            "risk_score": "Country Risk Score",
+            "ad_valorem_rate": "Effective Duty Rate (%)",
         },
     )
+
     fig.update_layout(
         xaxis_title="Country Risk Score",
-        yaxis_title="General Duty Rate (% ad valorem)",
+        yaxis_title="Effective Duty Rate (% ad valorem)",
         legend_title="Country / HTS Code",
         template="plotly_white",
         margin=dict(l=10, r=10, t=40, b=10),
     )
-    fig.update_traces(marker={"size": 12, "line": {"width": 1, "color": "rgba(0,0,0,0.3)"}})
+
+    # Base marker style for all points
+    fig.update_traces(marker={"size": 12, "line": {"width": 1.5, "color": "rgba(0,0,0,0.25)"}})
+
+    # Orange ring overlay on every ch99-adjusted point so they stand out
+    adjusted = df[df["ch99_applied"]]
+    if not adjusted.empty:
+        fig.add_trace(
+            go.Scatter(
+                x=adjusted["risk_score"],
+                y=adjusted["ad_valorem_rate"],
+                mode="markers",
+                marker=dict(
+                    size=20,
+                    symbol="circle-open",
+                    color="rgba(0,0,0,0)",
+                    line=dict(color="rgba(255,140,0,0.85)", width=2),
+                ),
+                name="Ch.99 adjusted",
+                hoverinfo="skip",
+                showlegend=True,
+            )
+        )
+
     return fig
 
 
@@ -689,7 +916,8 @@ def maybe_run_analysis(
     try:
         with st.spinner("Running analysis..."):
             tariff_df = fetch_tariffs_for_codes(conn, products)
-            corr_df, duty_exclusions = build_correlation_dataframe(countries, tariff_df, risk_df)
+            ch99_df = fetch_ch99_for_codes_and_countries(conn, products, countries)
+            corr_df, duty_exclusions = build_correlation_dataframe(countries, tariff_df, risk_df, ch99_df)
             timestamp = datetime.now().strftime("%I:%M %p")
             risk_snapshot = build_risk_snapshot(risk_df, countries)
             exclusion_message = None
