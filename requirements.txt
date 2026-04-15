@@ -3,3 +3,5 @@ openai
 python-dotenv>=1.0.0
 pandas
 plotly
+numpy
+python-json-logger
