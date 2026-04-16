@@ -59,6 +59,16 @@ WEIGHTS = {
     "risk_v2stcritrecadm": 0.20,
 }
 
+RISK_METHOD_SUMMARY = (
+    "Governance risk scores are derived from five V-Dem indicators: corrupt exchanges (v2excrptps), "
+    "public theft (v2exthftps), transparent laws (v2cltrnslw), respect for civil administration (v2clrspct), "
+    "and meritocratic state appointments (v2stcritrecadm). Each indicator is inverted and normalized to a 0–100 "
+    "scale using risk = ((max - value) / (max - min)) * 100 so that higher numbers always mean higher risk. "
+    "Those normalized columns are then combined into a composite score using fixed weights "
+    "(25%, 15%, 20%, 20%, 20% respectively). The resulting `risk_score` stays between 0 and 100 and is "
+    "bucketed using shared thresholds: <33 = Low (#1f9d55), 33–66 = Medium (#f1c40f), >66 = High (#c0392b)."
+)
+
 
 def load_data(path: Path) -> pd.DataFrame:
     """Load the CSV dataset and handle file-not-found gracefully."""

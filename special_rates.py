@@ -14,6 +14,23 @@ from logger import setup_logger
 logger = setup_logger(__name__)
 
 PROGRAM_TOKEN_PATTERN = re.compile(r"\(([^)]+)\)")
+
+# Regex to capture "See xxxx.xx.xx (CODE)" secondary references.
+# These appear after the main program list and grant the same free rate
+# via a Chapter 98/99 provision for the parenthesised program code.
+SEE_REFERENCE_PATTERN = re.compile(r"\bSee\s+[\d\w.,\-]+\s+\(([^)]+)\)", re.IGNORECASE)
+
+# Codes that use asterisk/plus suffixes should fall back to their base
+# program's country list when the variant itself has no static list.
+# e.g. E* → CBI countries (same as E), S+ → USMCA countries (same as S).
+_SUFFIX_FALLBACK: dict[str, str] = {
+    "A*": "A",
+    "E*": "E",
+    "S+": "S",
+    "P+": "P",
+    "J+": "J",
+    "J*": "J",
+}
 COUNTRY_ALIASES = {
     "burma": "Burma/Myanmar",
     "myanmar": "Burma/Myanmar",
@@ -100,7 +117,22 @@ def _record_unknown_warning(code: str) -> None:
 
 
 def parse_special_duty(value: str | None) -> SpecialDutyRule | None:
-    """Parse a special-duty string like 'Free (A+,AU)' into structured metadata."""
+    """Parse a special-duty string like 'Free (A+,AU)' into structured metadata.
+
+    Handles two syntactic forms found in HTS special-duty columns:
+
+    1. Simple list: ``Free (A+,AU,BH,CL,...)``
+       All codes are in the first parenthetical group.
+
+    2. See-reference list: ``Free (BH,CL,...) See 9822.04.05 (AU) See 9823.01.01-9823.01.07 (S+)``
+       The main list is in the first group; additional codes appear inside
+       ``See xxxx.xx (CODE)`` fragments.  Both sets are merged so that, e.g.,
+       Australia's free rate under a bilateral FTA is correctly recognised.
+
+    Suffix-variant codes (``E*``, ``S+``, ``P+``, ``A*``, ``J*``, ``J+``) fall
+    back to their base program's country list when the variant itself has no
+    static country list in the program map.
+    """
     if value is None:
         return None
     raw_text = str(value).strip()
@@ -109,18 +141,28 @@ def parse_special_duty(value: str | None) -> SpecialDutyRule | None:
 
     rate_text = raw_text
     program_codes: list[str] = []
-    match = PROGRAM_TOKEN_PATTERN.search(raw_text)
-    if match:
-        rate_text = raw_text[: match.start()].strip(" ,;")
+
+    # --- Step 1: extract codes from the FIRST parenthetical (main list) ---
+    first_match = PROGRAM_TOKEN_PATTERN.search(raw_text)
+    if first_match:
+        rate_text = raw_text[: first_match.start()].strip(" ,;")
         program_codes = [
             token.strip().upper()
-            for token in match.group(1).split(",")
+            for token in first_match.group(1).split(",")
             if token.strip()
         ]
+
+    # --- Step 2: extract codes from any "See xxxx (CODE)" fragments ---
+    for see_match in SEE_REFERENCE_PATTERN.finditer(raw_text):
+        for token in see_match.group(1).split(","):
+            code = token.strip().upper()
+            if code and code not in program_codes:
+                program_codes.append(code)
 
     if not program_codes:
         return None
 
+    # --- Step 3: resolve each code against the program map ---
     program_map = load_special_program_map()
     resolved_countries: dict[str, list[str]] = {}
     dynamic_codes: list[str] = []
@@ -129,15 +171,29 @@ def parse_special_duty(value: str | None) -> SpecialDutyRule | None:
 
     for code in program_codes:
         meta = program_map.get(code)
+
+        # Suffix-variant fallback: E* → E, S+ → S, P+ → P, etc.
+        if (meta is None or meta.get("type") == "dynamic_program" or not meta.get("countries")):
+            base_code = _SUFFIX_FALLBACK.get(code)
+            if base_code:
+                base_meta = program_map.get(base_code)
+                if base_meta and base_meta.get("countries"):
+                    # Use base program's countries; keep the variant's label if available
+                    resolved_countries[code] = base_meta["countries"]
+                    labels[code] = (meta or {}).get("label", base_meta.get("label", code))
+                    continue
+
         if not meta:
             _record_unknown_warning(code)
             unknown_codes.append(code)
             continue
+
         labels[code] = meta.get("label", code)
         if meta.get("type") == "dynamic_program" or not meta.get("countries"):
             dynamic_codes.append(code)
             _record_dynamic_warning(code)
             continue
+
         resolved_countries[code] = meta["countries"]
 
     duty_rate = parse_general_duty(rate_text or raw_text)
