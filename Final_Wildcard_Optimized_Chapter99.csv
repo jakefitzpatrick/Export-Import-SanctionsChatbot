@@ -6800,3 +6800,7 @@ NEWCODE,HTS_MASTER_CODE,COUNTRY,NEWRATE,NEWRATE_CLEAN,RATE_MODIFIER,ADDITIONAL_D
 9922.52.12,5203.00.30,Canada,Base Rate,,,,0.052,cents/kg,USMCA,10
 BLOCKER,ALL,Mexico,0.0,0.0,Floor,,,,USMCA Blocker,30
 BLOCKER,ALL,Canada,0.0,0.0,Floor,,,,USMCA Blocker,30
+EXEMPT,61,Costa Rica,0,0.0,Floor,,,,CAFTA-DR Textile Exempt,30
+EXEMPT,62,Costa Rica,0,0.0,Floor,,,,CAFTA-DR Textile Exempt,30
+EXEMPT,61,Nicaragua,0,0.0,Floor,,,,CAFTA-DR Textile Exempt,30
+EXEMPT,62,Nicaragua,0,0.0,Floor,,,,CAFTA-DR Textile Exempt,30

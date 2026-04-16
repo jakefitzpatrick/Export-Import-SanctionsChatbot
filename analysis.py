@@ -123,6 +123,8 @@ def fetch_ch99_for_codes_and_countries(
                     AND c.HTS_MASTER_CODE = SUBSTR(m.hts_code, 1, 10))
                 OR (LENGTH(c.HTS_MASTER_CODE) = 12
                     AND SUBSTR(c.HTS_MASTER_CODE, 1, 10) || '.' || SUBSTR(c.HTS_MASTER_CODE, 11) = m.hts_code)
+                OR (LENGTH(c.HTS_MASTER_CODE) = 2
+                    AND c.HTS_MASTER_CODE = SUBSTR(m.hts_code, 1, 2))
                 OR c.HTS_MASTER_CODE = 'ALL'
             )
         WHERE m.hts_code IN ({code_ph})
