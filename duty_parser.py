@@ -7,7 +7,7 @@ from typing import Iterable
 
 import pandas as pd
 
-FREE_DUTY_VALUES = {"free", "", "n/a", "none", "no", "zero"}
+FREE_DUTY_VALUES = {"free", "", "n/a", "none", "no", "zero", "0", "0.0", "0%", "0.0%"}
 PERCENT_PATTERN = re.compile(r"(?P<value>-?\d+(?:\.\d+)?)\s*%")
 CURRENCY_PREFIX_PATTERN = re.compile(
     r"(?P<symbol>[$])\s*(?P<value>-?\d+(?:\.\d+)?)(?P<unit>(?:\s*/\s*[A-Za-z0-9().-]+|\s+per\s+[A-Za-z0-9().-]+|\s+[A-Za-z0-9().-]+)?)",
