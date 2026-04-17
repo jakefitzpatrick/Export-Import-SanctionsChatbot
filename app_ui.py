@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from urllib.parse import quote
 
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-import streamlit.components.v1 as components
+
+
+def render_inline_iframe(html: str, *, height: int = 1) -> None:
+    """Embed inline HTML via a data URI since st.components.v1.html is deprecated."""
+    src = "data:text/html;charset=utf-8," + quote(html, safe="")
+    st.iframe(src, height=height)
 
 
 def get_css() -> str:
@@ -33,7 +39,7 @@ def get_css() -> str:
     }
     div[data-testid="stVerticalBlock"]:has(> div[data-context="true"]) {
         flex-shrink:0;
-        padding:14px 28px 12px;
+        padding:10px 28px 8px;
         border-bottom:1px solid var(--border);
         background:#fff;
         z-index:20;
@@ -143,7 +149,7 @@ def render_sidebar(on_clear) -> None:
         st.markdown("<p class='sidebar-mono'>About</p>", unsafe_allow_html=True)
         st.caption("Natural-language prompts are translated to SQL and executed locally against your read-only HTS SQLite database.")
         st.caption("Results are deterministic — every answer reruns against the local data.")
-        if st.button("Clear Chat", key="sidebar_clear", use_container_width=True):
+        if st.button("Clear Chat", key="sidebar_clear", width="stretch"):
             on_clear()
 
 
@@ -151,40 +157,20 @@ def render_sidebar(on_clear) -> None:
 def render_context_panel(
     *,
     country_options: list[str],
-    display_options: list[str],
-    code_map: dict[str, str],
+    picker_options: dict[str, dict],
     max_country: int,
     max_products: int,
     country_trimmed: bool,
-    product_trimmed: bool,
+    specific_trimmed: bool,
+    category_trimmed: bool,
     analysis_running: bool,
     on_clear_chat: Callable[[], None],
     logger,
 ) -> tuple[list[str], bool]:
     context_bar = st.container()
+    selected_products: list[str] = []
     with context_bar:
         st.markdown('<div data-context="true"></div>', unsafe_allow_html=True)
-        st.markdown(
-            """
-            <div style='display:flex;align-items:center;justify-content:space-between;padding:6px 0 14px;border-bottom:1px solid #E5E7EB;margin-bottom:14px;'>
-              <div style='display:flex;align-items:center;gap:10px;'>
-                <span style='font-family:serif;font-size:18px;font-weight:700;color:#0B2A4A;letter-spacing:-0.3px;'>HTS Analysis</span>
-                <span style='font-size:11px;padding:3px 10px;border-radius:999px;background:#F0FDF4;border:0.5px solid #86EFAC;color:#15803D;display:inline-flex;align-items:center;gap:6px;'>
-                  <span style='position:relative;width:8px;height:8px;display:inline-block;'>
-                    <span style='position:absolute;inset:0;border-radius:50%;background:#22C55E;opacity:0.4;animation:ping 1.5s cubic-bezier(0,0,0.2,1) infinite;'></span>
-                    <span style='position:absolute;inset:1px;border-radius:50%;background:#16A34A;display:inline-block;'></span>
-                  </span>
-                  Connected
-                </span>
-              </div>
-            </div>
-            <style>
-            @keyframes ping { 0% { transform: scale(1); opacity: 0.4; } 75%,100% { transform: scale(2); opacity: 0; } }
-            </style>
-            """,
-            unsafe_allow_html=True,
-        )
-        st.caption("Add up to three countries and three HTS codes, then run an aligned analysis or ask a direct question.")
         sel_cols = st.columns(2, gap="large")
         with sel_cols[0]:
             st.markdown("<p style='font-size:12px;font-weight:600;color:#0B2A4A;margin-bottom:4px;'>Countries</p>", unsafe_allow_html=True)
@@ -198,45 +184,129 @@ def render_context_panel(
             )
         with sel_cols[1]:
             st.markdown("<p style='font-size:12px;font-weight:600;color:#0B2A4A;margin-bottom:4px;'>HTS Products</p>", unsafe_allow_html=True)
-            if display_options:
+            mode = st.radio(
+                "Product granularity",
+                options=("specific", "categories"),
+                format_func=lambda opt: "Specific (10-digit)" if opt == "specific" else "Categories (8-digit)",
+                horizontal=True,
+                key="product_mode",
+                label_visibility="collapsed",
+            )
+            mode_options = picker_options.get(mode, {}).get("options") or []
+            mode_key = f"selected_products_display_{mode}"
+            mode_help = (
+                "Pick exact 10-digit HTS items to analyze."
+                if mode == "specific"
+                else "Pick broader 8-digit categories; each selection expands to all of its specific HTS codes."
+            )
+            if mode_options:
                 st.multiselect(
                     "HTS Products",
-                    options=display_options,
-                    key="selected_products_display",
+                    options=mode_options,
+                    key=mode_key,
                     max_selections=max_products,
                     label_visibility="collapsed",
-                    help="Products are loaded from the local HTS SQLite database.",
+                    help=mode_help,
                 )
             else:
                 st.error("No HTS products found — rebuild the SQLite database.")
+
         selected_countries = st.session_state.get("selected_countries", [])
-        selected_products_display = st.session_state.get("selected_products_display", [])
+        selected_specific_labels = st.session_state.get("selected_products_display_specific", [])
+        selected_category_labels = st.session_state.get("selected_products_display_categories", [])
         st.caption(
-            f"{len(selected_countries)} / {max_country} countries · {len(selected_products_display)} / {max_products} products"
+            f"{len(selected_countries)} / {max_country} countries · "
+            f"{len(selected_specific_labels)} specific selections · "
+            f"{len(selected_category_labels)} categories"
         )
         if country_trimmed:
             st.warning(f"Country selection limited to {max_country}. Extra choices were dropped.")
             logger.info("Trimmed country selection to limit", extra={"limit": max_country})
-        if product_trimmed:
-            st.warning(f"Product selection limited to {max_products}. Extra choices were dropped.")
-            logger.info("Trimmed product selection to limit", extra={"limit": max_products})
-        current_product_labels = st.session_state.get("selected_products_display", [])
-        valid_product_labels = [label for label in current_product_labels if label in code_map]
-        if len(valid_product_labels) != len(current_product_labels):
-            st.warning("Some selected products are unavailable in the current HTS list.")
-        selected_products = [code_map[label] for label in valid_product_labels]
-        st.session_state["selected_product_codes"] = selected_products
+        if specific_trimmed:
+            st.warning(f"Specific selections limited to {max_products}. Extra choices were dropped.")
+            logger.info("Trimmed specific selection to limit", extra={"limit": max_products})
+        if category_trimmed:
+            st.warning(f"Category selections limited to {max_products}. Extra choices were dropped.")
+            logger.info("Trimmed category selection to limit", extra={"limit": max_products})
 
         action_cols = st.columns([1, 1], gap="large")
-        analyse_disabled = analysis_running or not selected_countries or not selected_products
+        specific_code_map = picker_options.get("specific", {}).get("code_map", {})
+        category_code_map = picker_options.get("categories", {}).get("code_map", {})
+        category_children = picker_options.get("categories", {}).get("children", {})
+
+        selected_specific_codes = [
+            specific_code_map[label] for label in selected_specific_labels if label in specific_code_map
+        ]
+        selected_category_codes = [
+            category_code_map[label] for label in selected_category_labels if label in category_code_map
+        ]
+
+        expanded_codes: list[str] = []
+        seen_codes: set[str] = set()
+
+        def _append_unique(value: str) -> None:
+            if value and value not in seen_codes:
+                expanded_codes.append(value)
+                seen_codes.add(value)
+
+        for code in selected_specific_codes:
+            _append_unique(code)
+
+        empty_categories: list[str] = []
+        category_details: list[str] = []
+        for code in selected_category_codes:
+            children = category_children.get(code) or []
+            if not children:
+                empty_categories.append(code)
+                continue
+            for child in children:
+                _append_unique(child)
+            preview = ", ".join(children[:3])
+            suffix = "…" if len(children) > 3 else ""
+            category_details.append(f"{code} → {preview}{suffix}")
+
+        final_trimmed = False
+        if len(expanded_codes) > max_products:
+            final_trimmed = True
+            expanded_codes = expanded_codes[:max_products]
+
+        if empty_categories:
+            st.warning(
+                f"No specific HTS codes found for: {', '.join(empty_categories)}. "
+                "Consider choosing specific items instead."
+            )
+
+        if final_trimmed:
+            st.warning(
+                f"Using the first {max_products} specific codes due to the selection limit. "
+                "Trim your categories or switch to specific mode to refine."
+            )
+            logger.info(
+                "Trimmed expanded specific selections to limit",
+                extra={"limit": max_products},
+            )
+
+        st.session_state["selected_product_codes"] = expanded_codes
+        selected_products = expanded_codes
+
+        summary_lines = [
+            f"Mode: {'Categories (8-digit)' if st.session_state.get('product_mode') == 'categories' else 'Specific (10-digit)'}",
+            f"Specific selections: {len(selected_specific_codes)} · Categories: {len(selected_category_codes)}",
+            f"Expanded specific codes: {len(seen_codes)} (using {len(expanded_codes)})",
+        ]
+        st.caption(" · ".join(summary_lines))
+        if category_details:
+            st.caption("Category expansion: " + " | ".join(category_details))
+
+        analyse_disabled = analysis_running or not selected_countries or not expanded_codes
         with action_cols[0]:
             analyse_clicked = st.button(
                 "Analyze",
                 disabled=analyse_disabled,
-                use_container_width=True,
+                width="stretch",
             )
         with action_cols[1]:
-            if st.button("Clear Inputs", key="context_clear", use_container_width=True):
+            if st.button("Clear Inputs", key="context_clear", width="stretch"):
                 on_clear_chat()
         if analysis_running:
             st.caption("Running analysis…")
@@ -374,7 +444,7 @@ def render_chat_feed(messages: list[dict], latest_result: dict | None):
                 fig_payload = msg.get('plotly_fig')
                 if fig_payload:
                     fig = go.Figure(fig_payload)
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width="stretch")
                 body_html = msg['content']
                 headline = msg.get('headline')
                 if headline:
@@ -408,7 +478,7 @@ def render_chat_feed(messages: list[dict], latest_result: dict | None):
                 chart_data = msg.get('chart_data')
                 if chart_data:
                     chart_df = pd.DataFrame(chart_data, columns=msg.get('chart_columns'))
-                    st.dataframe(chart_df, use_container_width=True)
+                    st.dataframe(chart_df, width="stretch")
                 continue
 
             st.markdown(
@@ -427,14 +497,14 @@ def render_chat_feed(messages: list[dict], latest_result: dict | None):
             if latest_result['records']:
                 st.dataframe(
                     pd.DataFrame(latest_result['records'], columns=latest_result['columns']),
-                    use_container_width=True,
+                    width="stretch",
                 )
             else:
                 st.info('The last query returned no rows.')
         st.markdown('<div data-anchor="chat-end" id="chat-end"></div>', unsafe_allow_html=True)
         if analysis_stream_placeholder is None:
             analysis_stream_placeholder = st.empty()
-    components.html(
+    render_inline_iframe(
         """
         <script>
         const marker = window.parent.document.querySelector('div[data-anchor="chat-end"]');

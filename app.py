@@ -3,6 +3,7 @@ import logging
 import os
 import sqlite3
 import uuid
+from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
@@ -12,7 +13,6 @@ import openai
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-import streamlit.components.v1 as components
 
 from risk_model import get_risk_df
 from session import (
@@ -38,6 +38,8 @@ from logger import setup_logger
 from app_ui import (
     get_css,
     render_sidebar,
+    render_context_panel,
+    render_inline_iframe,
 )
 
 load_dotenv()
@@ -62,9 +64,9 @@ def get_db_connection(db_path: str) -> sqlite3.Connection:
 
 
 @st.cache_data(show_spinner=False)
-def load_product_options(_conn: sqlite3.Connection) -> list[tuple[str, str]]:
+def load_product_options(_conn: sqlite3.Connection) -> list[dict[str, str]]:
     query = (
-        'SELECT hts_code, description FROM hts '
+        'SELECT hts_code, description, full_description FROM hts '
         'WHERE hts_code IS NOT NULL AND hts_code <> "" '
         'ORDER BY hts_code LIMIT ?'
     )
@@ -75,7 +77,7 @@ def load_product_options(_conn: sqlite3.Connection) -> list[tuple[str, str]]:
         logger.warning("Failed to load product options: %s", exc)
         return []
     logger.info("Loaded %s product descriptions into the picker", len(df))
-    return list(df.itertuples(index=False, name=None))
+    return df.to_dict("records")
 
 
 # ---------------------------------------------------------------------------
@@ -398,8 +400,61 @@ def main() -> None:
     if not country_options:
         country_options = DEFAULT_COUNTRY_SELECTION.copy()
     product_options = load_product_options(conn)
-    display_options = [f"{code} — {desc}" for code, desc in product_options]
-    code_map = dict(zip(display_options, [code for code, _ in product_options]))
+    product_option_rows: list[dict[str, str]] = []
+    for record in product_options:
+        code = (record.get("hts_code") or "").strip()
+        desc = (record.get("description") or "").strip()
+        full_desc = (record.get("full_description") or desc or "").strip()
+        if not code:
+            continue
+        label = f"{code} — {desc}" if desc else code
+        product_option_rows.append(
+            {
+                "code": code,
+                "label": label,
+                "desc": desc,
+                "full": full_desc or label,
+            }
+        )
+
+    # Split options into specific (10-digit) and category (8-digit) codes.
+    category_lookup: dict[str, dict[str, str]] = {}
+    category_children: defaultdict[str, list[str]] = defaultdict(list)
+    specific_rows: list[dict[str, str]] = []
+    for row in product_option_rows:
+        code = row["code"]
+        segments = code.split(".")
+        if len(segments) >= 4:
+            specific_rows.append(row)
+            parent_code = ".".join(segments[:3])
+            category_children[parent_code].append(code)
+        else:
+            category_lookup[code] = row
+
+    categories_rows: list[dict[str, str]] = []
+    for code, row in sorted(category_lookup.items()):
+        children = sorted(category_children.get(code, []))
+        if not children:
+            continue
+        base_label = row["label"]
+        label = f"{base_label} ({len(children)} items)"
+        categories_rows.append(
+            {
+                "code": code,
+                "label": label,
+                "full": row["full"],
+                "children": children,
+            }
+        )
+
+    specific_rows.sort(key=lambda r: r["code"])
+
+    specific_display_options = [row["label"] for row in specific_rows]
+    category_display_options = [row["label"] for row in categories_rows]
+    specific_code_map = {row["label"]: row["code"] for row in specific_rows}
+    category_code_map = {row["label"]: row["code"] for row in categories_rows}
+    category_children_map = {row["code"]: row["children"] for row in categories_rows}
+    code_map = specific_code_map.copy()
     if "messages" not in st.session_state:
         st.session_state.messages = []
     st.session_state.setdefault(LAST_RESULT_KEY, None)
@@ -407,10 +462,14 @@ def main() -> None:
         st.session_state["selected_countries"] = (
             country_options[:MAX_COUNTRY_SELECTION] or DEFAULT_COUNTRY_SELECTION.copy()
         )
-    if "selected_products_display" not in st.session_state:
-        st.session_state["selected_products_display"] = (
-            display_options[: min(MAX_PRODUCT_SELECTION, len(display_options))] if display_options else []
+    st.session_state.setdefault("product_mode", "specific")
+    if "selected_products_display_specific" not in st.session_state:
+        st.session_state["selected_products_display_specific"] = (
+            specific_display_options[: min(MAX_PRODUCT_SELECTION, len(specific_display_options))]
+            if specific_display_options
+            else []
         )
+    st.session_state.setdefault("selected_products_display_categories", [])
     st.session_state.setdefault("selected_product_codes", [])
     st.session_state.setdefault("analysis_inflight", False)
     st.session_state.setdefault("analysis_active_run", None)
@@ -423,151 +482,74 @@ def main() -> None:
         "selected_countries",
         MAX_COUNTRY_SELECTION,
     )
-    selected_products_display, product_trimmed = enforce_selection_limit(
-        "selected_products_display",
+    selected_specific_display, specific_trimmed = enforce_selection_limit(
+        "selected_products_display_specific",
+        MAX_PRODUCT_SELECTION,
+    )
+    selected_category_display, category_trimmed = enforce_selection_limit(
+        "selected_products_display_categories",
         MAX_PRODUCT_SELECTION,
     )
 
     render_sidebar(_handle_sidebar_clear)
 
-    context_bar = st.container()
-    with context_bar:
-        st.markdown('<div data-context="true"></div>', unsafe_allow_html=True)
-        st.markdown("### Context")
-        st.caption("Select up to three countries and products to drive the analysis below.")
+    analysis_running = st.session_state.get("analysis_inflight", False)
+    picker_options = {
+        "specific": {
+            "options": specific_display_options,
+            "code_map": specific_code_map,
+        },
+        "categories": {
+            "options": category_display_options,
+            "code_map": category_code_map,
+            "children": category_children_map,
+        },
+    }
+    selected_products, analyse_clicked = render_context_panel(
+        country_options=country_options,
+        picker_options=picker_options,
+        max_country=MAX_COUNTRY_SELECTION,
+        max_products=MAX_PRODUCT_SELECTION,
+        country_trimmed=country_trimmed,
+        specific_trimmed=specific_trimmed,
+        category_trimmed=category_trimmed,
+        analysis_running=analysis_running,
+        on_clear_chat=_handle_sidebar_clear,
+        logger=logger,
+    )
+    selected_countries = st.session_state.get("selected_countries", [])
 
-        # Trade-flow map — updates live as countries are chosen
-        _map_countries = tuple(st.session_state.get("selected_countries", []))
-        _map_fig = render_trade_map(_map_countries)
-        st.plotly_chart(
-            _map_fig,
-            use_container_width=True,
-            config={"staticPlot": False, "displayModeBar": False},
-            key="trade_map",
-        )
-        if _map_countries:
-            components.html(
-                """<script>
-                (function tryPlay() {
-                    var attempts = 0;
-                    function attempt() {
-                        attempts++;
-                        try {
-                            var iframes = window.parent.document.querySelectorAll('iframe[title="trade_map"]');
-                            if (!iframes.length) iframes = window.parent.document.querySelectorAll('.stPlotlyChart iframe');
-                            for (var i = 0; i < iframes.length; i++) {
-                                var inner = iframes[i].contentWindow || iframes[i].contentDocument.defaultView;
-                                var graphs = inner.document.querySelectorAll('.js-plotly-plot');
-                                graphs.forEach(function(g) {
-                                    if (g._fullLayout && g._fullLayout.updatemenus && g._fullLayout.updatemenus.length) {
-                                        Plotly.animate(g, null, {
-                                            frame: {duration: 45, redraw: false},
-                                            transition: {duration: 0},
-                                            mode: 'immediate',
-                                        });
-                                    }
-                                });
-                            }
-                        } catch(e) {}
-                        if (attempts < 20) setTimeout(attempt, 300);
-                    }
-                    setTimeout(attempt, 500);
-                })();
-                </script>""",
-                height=0,
+    if analyse_clicked:
+        queued = queue_analysis_request(selected_countries, selected_products)
+        if not queued:
+            st.warning("Select at least one country and one product before running analysis.")
+            logger.warning(
+                "Analyse button pressed without valid selections",
+                extra={"countries": selected_countries, "products": selected_products},
             )
 
-        sel_cols = st.columns(2)
-        with sel_cols[0]:
-            st.multiselect(
-                "Countries",
-                options=country_options,
-                key="selected_countries",
-                max_selections=MAX_COUNTRY_SELECTION,
-                help="Choose up to three countries to compare governance risk.",
-            )
-        with sel_cols[1]:
-            if display_options:
-                st.multiselect(
-                    "HTS Products",
-                    options=display_options,
-                    key="selected_products_display",
-                    max_selections=MAX_PRODUCT_SELECTION,
-                    help="Products are loaded from the local HTS SQLite database.",
-                )
-            else:
-                st.error("No HTS products found—rebuild the SQLite database.")
-        selected_countries = st.session_state.get("selected_countries", [])
-        selected_products_display = st.session_state.get("selected_products_display", [])
-        st.caption(
-            f"{len(selected_countries)} / {MAX_COUNTRY_SELECTION} countries · {len(selected_products_display)} / {MAX_PRODUCT_SELECTION} products"
-        )
-        if country_trimmed:
-            st.warning(
-                f"Country selection limited to {MAX_COUNTRY_SELECTION}. Extra choices were dropped."
-            )
-            logger.info("Trimmed country selection to limit", extra={"limit": MAX_COUNTRY_SELECTION})
-        if product_trimmed:
-            st.warning(
-                f"Product selection limited to {MAX_PRODUCT_SELECTION}. Extra choices were dropped."
-            )
-            logger.info("Trimmed product selection to limit", extra={"limit": MAX_PRODUCT_SELECTION})
-        current_product_labels = st.session_state.get("selected_products_display", [])
-        valid_product_labels = [label for label in current_product_labels if label in code_map]
-        if len(valid_product_labels) != len(current_product_labels):
-            st.warning("Some selected products are unavailable in the current HTS list.")
-        selected_products = [code_map[label] for label in valid_product_labels]
-        st.session_state["selected_product_codes"] = selected_products
-
-        action_cols = st.columns([1, 1])
-        analyse_disabled = (
-            st.session_state.get("analysis_inflight")
-            or not selected_countries
-            or not selected_products
-        )
-        with action_cols[0]:
-            analyse_clicked = st.button(
-                "Analyse",
-                width="stretch",
-                disabled=analyse_disabled,
-            )
-        with action_cols[1]:
-            if st.button("Clear Chat", width="stretch", key="context_clear"):
-                reset_app_state()
-                st.rerun()
-        if analyse_clicked:
-            queued = queue_analysis_request(selected_countries, selected_products)
-            if not queued:
-                st.warning("Select at least one country and one product before running analysis.")
-                logger.warning(
-                    "Analyse button pressed without valid selections",
-                    extra={"countries": selected_countries, "products": selected_products},
-                )
-        if st.session_state.get("analysis_inflight"):
-            st.caption("Running analysis…")
-
-        # Chart mode toggle — persists across reruns so switching is instant
-        _last_analysis = next(
-            (m for m in reversed(st.session_state.get("messages", []))
-             if m.get("type") == "analysis"),
-            None,
-        )
-        _has_specific = bool(_last_analysis and _last_analysis.get("has_specific_data"))
-        _toggle_help = (
-            "Switch the Y axis between the ad valorem percentage rate and the specific duty amount (e.g. $/kg, ¢/dozen)."
-            if _has_specific
-            else "This product has a percentage-based rate only. Select a product with a unit-based rate (e.g. $/kg, ¢/liter) to use this view."
-        )
-        if not _has_specific:
-            st.session_state["chart_mode"] = "ad_valorem"
-        show_specific = st.toggle(
-            "Show specific duty rate ($/unit)",
-            value=(st.session_state["chart_mode"] == "specific"),
-            disabled=not _has_specific,
-            help=_toggle_help,
-        )
-        if _has_specific:
-            st.session_state["chart_mode"] = "specific" if show_specific else "ad_valorem"
+    # Chart mode toggle — persists across reruns so switching is instant
+    _last_analysis = next(
+        (m for m in reversed(st.session_state.get("messages", []))
+         if m.get("type") == "analysis"),
+        None,
+    )
+    _has_specific = bool(_last_analysis and _last_analysis.get("has_specific_data"))
+    _toggle_help = (
+        "Switch the Y axis between the ad valorem percentage rate and the specific duty amount (e.g. $/kg, ¢/dozen)."
+        if _has_specific
+        else "This product has a percentage-based rate only. Select a product with a unit-based rate (e.g. $/kg, ¢/liter) to use this view."
+    )
+    if not _has_specific:
+        st.session_state["chart_mode"] = "ad_valorem"
+    show_specific = st.toggle(
+        "Show specific duty rate ($/unit)",
+        value=(st.session_state["chart_mode"] == "specific"),
+        disabled=not _has_specific,
+        help=_toggle_help,
+    )
+    if _has_specific:
+        st.session_state["chart_mode"] = "specific" if show_specific else "ad_valorem"
 
     analysis_stream_placeholder: st.delta_generator.DeltaGenerator | None = None
     chat_feed = st.container()
@@ -654,7 +636,7 @@ def main() -> None:
                     _mode = st.session_state.get("chart_mode", "ad_valorem")
                     fig = render_correlation_chart(_chart_df, mode=_mode)
                     if fig:
-                        st.plotly_chart(fig, use_container_width=True)
+                        st.plotly_chart(fig, width="stretch")
                         if _mode == "ad_valorem":
                             st.caption(
                                 "Orange ring = effective rate modified by a Chapter 99 surcharge or trade program override."
@@ -667,7 +649,7 @@ def main() -> None:
                 elif msg.get("plotly_fig"):
                     # Fallback: render stored static figure
                     fig = go.Figure(msg["plotly_fig"])
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width="stretch")
 
                 headline = msg.get("headline")
                 body_html = msg["content"]
@@ -726,19 +708,19 @@ def main() -> None:
             analysis_stream_placeholder,
         )
 
-    components.html(
-        f"""
+    render_inline_iframe(
+        """
         <script>
         const marker = window.parent.document.querySelector('div[data-anchor="chat-end"]');
-        if (marker) {{
+        if (marker) {
             const chatBlock = marker.closest('div[data-testid="stVerticalBlock"]');
-            if (chatBlock) {{
+            if (chatBlock) {
                 chatBlock.scrollTop = chatBlock.scrollHeight;
-            }}
-        }}
+            }
+        }
         </script>
         """,
-        height=0,
+        height=1,
     )
 
 if __name__ == "__main__":
