@@ -27,8 +27,12 @@ QA_SYSTEM_PROMPT = (
     "Your goals:\n"
     "- Give medium-length answers: a short paragraph plus 1–3 concise, "
     "actionable suggestions where appropriate.\n"
+    "- Explain the tariff mechanics clearly: what the base HTS rate is, whether "
+    "a Chapter 99 surcharge applies and under which trade program (e.g. "
+    "Section 122, Section 232, USMCA blocker), and how those combine into the "
+    "effective rate. When rates differ across countries, explain why.\n"
     "- Describe patterns and relationships (e.g., higher-risk countries with "
-    "higher ad valorem rates), but be cautious and avoid sweeping claims.\n"
+    "higher effective rates), but be cautious and avoid sweeping claims.\n"
     "- Keep recommendations practical and specific to the countries and HTS "
     "codes in view.\n\n"
     "Strict constraints:\n"
@@ -38,6 +42,9 @@ QA_SYSTEM_PROMPT = (
     "access backend data.\n"
     "- Do NOT invent, approximate, or assume new numbers or countries beyond "
     "what you have been given.\n"
+    "- Treat all rates, risk scores, and trade program labels you are given as "
+    "correct. Do not question, second-guess, or suggest that the figures may be "
+    "inaccurate — accept them at face value and reason from them.\n"
     "- Do NOT generate or suggest SQL queries, and do NOT imply that you are "
     "running live database queries.\n"
     "- This is not legal advice; if an answer could be interpreted that way, "
@@ -106,6 +113,36 @@ def upsert_analysis_message(message: dict) -> None:
     msgs.append(message)
 
 
+def _build_tariff_breakdown(chart_columns: list, chart_data: list) -> list[dict]:
+    """Convert chart rows into structured per-country tariff breakdowns.
+
+    chart_data is stored as to_dict("records") — rows are dicts keyed by column name.
+    """
+    if not chart_data:
+        return []
+    breakdowns = []
+    for row in chart_data:
+        if not isinstance(row, dict):
+            continue
+        entry = {
+            key: row.get(field)
+            for field, key in [
+                ("Country", "country"),
+                ("HTS Code", "hts_code"),
+                ("Product", "product_description"),
+                ("Base Rate", "base_rate"),
+                ("Effective Rate (%)", "effective_rate_pct"),
+                ("Ch.99 Δ", "ch99_surcharge"),
+                ("Trade Program", "trade_program"),
+                ("Rate Source", "rate_source"),
+                ("Risk Score", "risk_score"),
+            ]
+        }
+        if any(v is not None for v in entry.values()):
+            breakdowns.append(entry)
+    return breakdowns
+
+
 def _build_chat_context() -> dict:
     """Summarise the latest analysis result and recent chat for the LLM."""
     messages = st.session_state.get("messages", [])
@@ -113,13 +150,15 @@ def _build_chat_context() -> dict:
     latest_analysis = None
     for msg in reversed(messages):
         if msg.get("type") == "analysis":
+            chart_columns = msg.get("chart_columns") or []
+            chart_data = msg.get("chart_data") or []
+            tariff_breakdown = _build_tariff_breakdown(chart_columns, chart_data)
             latest_analysis = {
                 "summary": msg.get("content"),
                 "selections": msg.get("selections"),
                 "risk_snapshot": msg.get("risk_snapshot"),
-                "chart_columns": msg.get("chart_columns"),
-                "chart_data_sample": (msg.get("chart_data") or [])[:30],
-                "non_ad_summary": msg.get("non_ad_summary"),
+                "tariff_breakdown": tariff_breakdown,
+                "ch99_summary": msg.get("ch99_summary"),
                 "non_ad_summary_text": msg.get("non_ad_summary_text"),
             }
             break
@@ -256,17 +295,36 @@ def answer_question(question: str, deployment_id: str, conn: sqlite3.Connection)
 
 def answer_question_with_context(question: str, deployment_id: str, context: dict) -> tuple[str, dict]:
     """Use the LLM to answer a question based on existing results only."""
-    user_payload = {
-        "context": context,
-        "question": question,
-    }
-    user_message = (
-        "You are given JSON containing the current analytic context and the user's question.\n"
-        "Use only this data and the chat history to answer. Do not guess new numbers.\n\n"
-        f"{json.dumps(user_payload, default=str)[:6000]}"
-        "\n\nRisk score methodology reference:\n"
-        f"{RISK_METHOD_SUMMARY}"
-    )
+    analysis = context.get("latest_analysis") or {}
+    tariff_breakdown = analysis.get("tariff_breakdown") or []
+    risk_snapshot = analysis.get("risk_snapshot") or []
+    ch99_summary = analysis.get("ch99_summary") or {}
+    selections = analysis.get("selections") or {}
+    summary = analysis.get("summary") or ""
+
+    sections = []
+    if selections:
+        sections.append(f"SELECTIONS\n{json.dumps(selections, default=str)}")
+    if risk_snapshot:
+        sections.append(f"COUNTRY RISK SCORES\n{json.dumps(risk_snapshot, default=str)}")
+    if tariff_breakdown:
+        breakdown_note = (
+            "TARIFF BREAKDOWN (per country)\n"
+            "Fields: country, hts_code, product_description, base_rate (raw HTS text), "
+            "effective_rate_pct (after Ch.99), ch99_surcharge (percentage-point delta from Ch.99), "
+            "trade_program (Ch.99 program driving the surcharge), rate_source, risk_score\n"
+            + json.dumps(tariff_breakdown, default=str)
+        )
+        sections.append(breakdown_note)
+    if ch99_summary.get("n_adjusted"):
+        sections.append(f"CHAPTER 99 SUMMARY\n{json.dumps(ch99_summary, default=str)}")
+    if summary:
+        sections.append(f"ANALYSIS NARRATIVE\n{summary}")
+    sections.append(f"RISK SCORE METHODOLOGY\n{RISK_METHOD_SUMMARY}")
+    sections.append(f"RECENT CHAT\n{json.dumps(context.get('recent_chat', []), default=str)}")
+    sections.append(f"USER QUESTION\n{question}")
+
+    user_message = "\n\n---\n\n".join(sections)
 
     logger.info(
         "Answering question from cached context",

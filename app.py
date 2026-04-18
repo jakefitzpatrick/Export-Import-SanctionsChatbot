@@ -564,7 +564,90 @@ def main() -> None:
 
     with composer:
         st.markdown('<div data-composer="true"></div>', unsafe_allow_html=True)
+
+        # Tariff context panel — shown when there is a completed analysis
+        _latest_analysis_msg = next(
+            (m for m in reversed(st.session_state.get("messages", [])) if m.get("type") == "analysis"),
+            None,
+        )
+        if _latest_analysis_msg:
+            _ctx_rows = _latest_analysis_msg.get("chart_data") or []
+            if _ctx_rows:
+                def _get(row, field):
+                    # chart_data is stored as to_dict("records") — rows are dicts
+                    if isinstance(row, dict):
+                        return row.get(field, "—") or "—"
+                    return "—"
+
+                _hts_codes = list(dict.fromkeys(_get(r, "HTS Code") for r in _ctx_rows))
+                _hts_label = ", ".join(str(c) for c in _hts_codes if c and c != "—") or "—"
+                _product = _get(_ctx_rows[0], "Product")
+
+                _rows_html = ""
+                for row in _ctx_rows:
+                    country = _get(row, "Country")
+                    base = _get(row, "Base Rate")
+                    eff = _get(row, "Effective Rate (%)")
+                    delta = _get(row, "Ch.99 Δ")
+                    program = _get(row, "Trade Program")
+                    source = _get(row, "Rate Source")
+                    risk = _get(row, "Risk Score")
+
+                    delta_str = f"{delta}" if delta not in (None, "—", "") else "—"
+                    program_str = f" ({program})" if program not in (None, "—", "") else ""
+                    _rows_html += (
+                        f"<tr>"
+                        f"<td>{country}</td>"
+                        f"<td>{risk}</td>"
+                        f"<td>{base}</td>"
+                        f"<td>{eff}%</td>"
+                        f"<td>{delta_str}{program_str}</td>"
+                        f"<td style='color:#64748b;font-size:11px;'>{source}</td>"
+                        f"</tr>"
+                    )
+
+                _panel_html = f"""
+                <style>
+                .tariff-ctx {{ font-size:12px; color:#1F2937; margin-bottom:8px; }}
+                .tariff-ctx summary {{ cursor:pointer; font-size:11px; font-weight:600;
+                    color:#0B2A4A; letter-spacing:0.04em; text-transform:uppercase;
+                    padding:4px 0; user-select:none; }}
+                .tariff-ctx table {{ width:100%; border-collapse:collapse; margin-top:6px; }}
+                .tariff-ctx th {{ font-size:10px; font-weight:600; color:#64748b;
+                    text-transform:uppercase; letter-spacing:0.06em;
+                    padding:3px 8px; border-bottom:1px solid #E5E7EB; text-align:left; }}
+                .tariff-ctx td {{ padding:4px 8px; border-bottom:1px solid #F1F5F9; vertical-align:top; }}
+                .tariff-ctx tr:last-child td {{ border-bottom:none; }}
+                </style>
+                <details class="tariff-ctx">
+                  <summary>Current analysis context — {_hts_label} · {_product}</summary>
+                  <table>
+                    <thead><tr>
+                      <th>Country</th><th>Risk</th><th>Base Rate</th>
+                      <th>Effective Rate</th><th>Ch.99 Surcharge</th><th>Source</th>
+                    </tr></thead>
+                    <tbody>{_rows_html}</tbody>
+                  </table>
+                </details>
+                """
+                st.markdown(_panel_html, unsafe_allow_html=True)
+
         prompt = st.chat_input(QUESTION_PLACEHOLDER, key="chat_input")
+        st.markdown(
+            """
+            <style>
+            .sample-prompts { display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; }
+            .sample-prompt { font-size:11px; color:#0B2A4A; background:#F0F4F8;
+                border:1px solid #CBD5E1; border-radius:999px; padding:4px 12px; cursor:default; }
+            </style>
+            <div class='sample-prompts'>
+              <span class='sample-prompt'>Which country has the lowest effective duty rate?</span>
+              <span class='sample-prompt'>Why do the rates differ across countries?</span>
+              <span class='sample-prompt'>What trade program is driving the surcharge?</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
     if prompt is not None:
         question = prompt.strip()
@@ -595,7 +678,7 @@ def main() -> None:
         st.markdown('<div data-chat="true"></div>', unsafe_allow_html=True)
         if len(st.session_state.messages) == 0:
             st.markdown(
-                "<div class='empty-chat'>Select countries/products above or ask a question about the HTS data.</div>",
+                "<div class='empty-chat'>Select countries and an HTS product above, then click Analyze.</div>",
                 unsafe_allow_html=True,
             )
         for msg in st.session_state.messages:
