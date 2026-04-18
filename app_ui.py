@@ -192,6 +192,12 @@ def render_context_panel(
                 key="product_mode",
                 label_visibility="collapsed",
             )
+            # Clear the inactive mode's selections on toggle so stale picks
+            # don't silently reappear or mix across modes.
+            if mode == "categories":
+                st.session_state.pop("selected_products_display_specific", None)
+            else:
+                st.session_state.pop("selected_products_display_categories", None)
             mode_options = picker_options.get(mode, {}).get("options") or []
             mode_key = f"selected_products_display_{mode}"
             mode_help = (
@@ -214,10 +220,21 @@ def render_context_panel(
         selected_countries = st.session_state.get("selected_countries", [])
         selected_specific_labels = st.session_state.get("selected_products_display_specific", [])
         selected_category_labels = st.session_state.get("selected_products_display_categories", [])
+
+        # Only treat selections from the active mode as inputs to the analysis.
+        # This prevents default 10-digit picks from being silently combined with
+        # or overriding 8-digit category selections.
+        if mode == "specific":
+            active_specific_labels = selected_specific_labels
+            active_category_labels = []
+        else:
+            active_specific_labels = []
+            active_category_labels = selected_category_labels
+
         st.caption(
             f"{len(selected_countries)} / {max_country} countries · "
-            f"{len(selected_specific_labels)} specific selections · "
-            f"{len(selected_category_labels)} categories"
+            f"{len(active_specific_labels)} specific selections · "
+            f"{len(active_category_labels)} categories"
         )
         if country_trimmed:
             st.warning(f"Country selection limited to {max_country}. Extra choices were dropped.")
@@ -232,13 +249,12 @@ def render_context_panel(
         action_cols = st.columns([1, 1], gap="large")
         specific_code_map = picker_options.get("specific", {}).get("code_map", {})
         category_code_map = picker_options.get("categories", {}).get("code_map", {})
-        category_children = picker_options.get("categories", {}).get("children", {})
 
         selected_specific_codes = [
-            specific_code_map[label] for label in selected_specific_labels if label in specific_code_map
+            specific_code_map[label] for label in active_specific_labels if label in specific_code_map
         ]
         selected_category_codes = [
-            category_code_map[label] for label in selected_category_labels if label in category_code_map
+            category_code_map[label] for label in active_category_labels if label in category_code_map
         ]
 
         expanded_codes: list[str] = []
@@ -249,36 +265,21 @@ def render_context_panel(
                 expanded_codes.append(value)
                 seen_codes.add(value)
 
-        for code in selected_specific_codes:
-            _append_unique(code)
-
-        empty_categories: list[str] = []
-        category_details: list[str] = []
-        for code in selected_category_codes:
-            children = category_children.get(code) or []
-            if not children:
-                empty_categories.append(code)
-                continue
-            for child in children:
-                _append_unique(child)
-            preview = ", ".join(children[:3])
-            suffix = "…" if len(children) > 3 else ""
-            category_details.append(f"{code} → {preview}{suffix}")
+        if mode == "specific":
+            for code in selected_specific_codes:
+                _append_unique(code)
+        else:
+            for code in selected_category_codes:
+                _append_unique(code)
 
         final_trimmed = False
         if len(expanded_codes) > max_products:
             final_trimmed = True
             expanded_codes = expanded_codes[:max_products]
 
-        if empty_categories:
-            st.warning(
-                f"No specific HTS codes found for: {', '.join(empty_categories)}. "
-                "Consider choosing specific items instead."
-            )
-
         if final_trimmed:
             st.warning(
-                f"Using the first {max_products} specific codes due to the selection limit. "
+                f"Using the first {max_products} codes due to the selection limit. "
                 "Trim your categories or switch to specific mode to refine."
             )
             logger.info(
@@ -292,11 +293,9 @@ def render_context_panel(
         summary_lines = [
             f"Mode: {'Categories (8-digit)' if st.session_state.get('product_mode') == 'categories' else 'Specific (10-digit)'}",
             f"Specific selections: {len(selected_specific_codes)} · Categories: {len(selected_category_codes)}",
-            f"Expanded specific codes: {len(seen_codes)} (using {len(expanded_codes)})",
+            f"Expanded codes: {len(seen_codes)} (using {len(expanded_codes)})",
         ]
         st.caption(" · ".join(summary_lines))
-        if category_details:
-            st.caption("Category expansion: " + " | ".join(category_details))
 
         analyse_disabled = analysis_running or not selected_countries or not expanded_codes
         with action_cols[0]:

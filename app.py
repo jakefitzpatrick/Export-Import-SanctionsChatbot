@@ -464,11 +464,14 @@ def main() -> None:
         )
     st.session_state.setdefault("product_mode", "specific")
     if "selected_products_display_specific" not in st.session_state:
-        st.session_state["selected_products_display_specific"] = (
-            specific_display_options[: min(MAX_PRODUCT_SELECTION, len(specific_display_options))]
-            if specific_display_options
-            else []
-        )
+        # Only seed default specific codes if the current mode is specific,
+        # so category mode starts with a clean slate.
+        if st.session_state.get("product_mode", "specific") == "specific":
+            st.session_state["selected_products_display_specific"] = (
+                specific_display_options[: min(MAX_PRODUCT_SELECTION, len(specific_display_options))]
+                if specific_display_options
+                else []
+            )
     st.session_state.setdefault("selected_products_display_categories", [])
     st.session_state.setdefault("selected_product_codes", [])
     st.session_state.setdefault("analysis_inflight", False)
@@ -520,6 +523,10 @@ def main() -> None:
     selected_countries = st.session_state.get("selected_countries", [])
 
     if analyse_clicked:
+        # Cheap sanity check: product codes must be non-empty strings.
+        assert all(
+            isinstance(code, str) and len(code) > 0 for code in selected_products
+        ), f"Bad product codes going into analysis: {selected_products}"
         queued = queue_analysis_request(selected_countries, selected_products)
         if not queued:
             st.warning("Select at least one country and one product before running analysis.")

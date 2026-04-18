@@ -41,6 +41,7 @@ DISPLAY_COLUMN_MAP = [
     ("ad_valorem_rate", "Effective Rate (%)"),
     ("ch99_delta", "Ch.99 Δ"),
     ("ch99_tradeprogram", "Trade Program"),
+     ("ch99_specific_surcharge", "Ch.99 Specific"),
     ("rate_source", "Rate Source"),
     ("plotted", "Plotted"),
 ]
@@ -73,7 +74,15 @@ def _format_decimal_preserving(value: float) -> str:
 
 
 def _format_specific(value: float | None, unit: str | None, raw: str | None) -> str | None:
-    cleaned_raw = (raw or "").strip()
+    cleaned_raw = ""
+    if isinstance(raw, str):
+        cleaned_raw = raw.strip()
+    elif raw is not None:
+        # Pandas often converts empty strings to NaN/NA scalars, so drop them silently.
+        if pd.isna(raw):
+            cleaned_raw = ""
+        else:
+            cleaned_raw = str(raw).strip()
     if cleaned_raw:
         return cleaned_raw
     if value is None:
@@ -81,6 +90,89 @@ def _format_specific(value: float | None, unit: str | None, raw: str | None) -> 
     unit_fmt = _normalize_unit(unit) or "/unit"
     amount = _format_decimal_preserving(value)
     return f"{amount}{unit_fmt}"
+
+
+def _hts_ancestor_codes(code: str) -> list[str]:
+    """Return parent HTS codes by truncating dotted segments."""
+    if not code:
+        return []
+    sanitized = code.strip()
+    if not sanitized:
+        return []
+    parts = sanitized.split(".")
+    ancestors: list[str] = []
+    while len(parts) > 1:
+        parts = parts[:-1]
+        ancestors.append(".".join(parts))
+    return ancestors
+
+
+def _normalize_denominator(unit_text: str | None) -> str | None:
+    if not unit_text:
+        return None
+    cleaned = unit_text.lower().replace(" per ", "/")
+    for token in ("$", "usd", "dollars", "dollar", "cents", "cent", "¢"):
+        cleaned = cleaned.replace(token, "")
+    cleaned = cleaned.strip()
+    if "/" in cleaned:
+        cleaned = cleaned.split("/", 1)[1]
+    cleaned = cleaned.lstrip("/").strip()
+    return cleaned or None
+
+
+def _convert_specific_value(value: float | None, unit_hint: str | None, raw_hint: str | None = None) -> float | None:
+    """Convert specific duty amounts to USD based on currency hint."""
+    if value is None:
+        return None
+    tokens = (unit_hint or "") + " " + (raw_hint or "")
+    lower = tokens.lower()
+    if "cent" in lower or "¢" in lower:
+        return value / 100.0
+    return value
+
+
+def _decorate_specific_raw(amount: float | None, base_raw: str | None, unit: str | None) -> str | None:
+    if amount is None:
+        return None
+    unit_suffix = (unit or "").strip()
+    if unit_suffix and not unit_suffix.startswith("/"):
+        unit_suffix = f"/{unit_suffix}"
+    symbol = ""
+    lower_raw = (base_raw or "").lower()
+    if "$" in (base_raw or ""):
+        symbol = "$"
+        formatted_value = _format_decimal_preserving(amount)
+    elif "¢" in lower_raw or "cent" in lower_raw:
+        symbol = "¢"
+        formatted_value = _format_decimal_preserving(amount * 100.0)
+    else:
+        formatted_value = _format_decimal_preserving(amount)
+    return f"{symbol}{formatted_value}{unit_suffix}".strip()
+
+
+def _resolve_general_duty_rate(
+    conn: sqlite3.Connection,
+    code: str,
+    cache: dict[str, tuple[str, str | None]],
+) -> tuple[str, str | None]:
+    """Return (duty_text, source_code) for the first ancestor with a general duty rate."""
+    cached = cache.get(code)
+    if cached is not None:
+        return cached
+    row = conn.execute("SELECT general_duty_rate FROM hts WHERE hts_code = ?", (code,)).fetchone()
+    text = ""
+    if row:
+        text = (row[0] or "").strip()
+    if text:
+        cache[code] = (text, code)
+        return cache[code]
+    for ancestor in _hts_ancestor_codes(code):
+        candidate = _resolve_general_duty_rate(conn, ancestor, cache)
+        if candidate[0]:
+            cache[code] = candidate
+            return candidate
+    cache[code] = ("", None)
+    return cache[code]
 
 
 def fetch_ch99_for_codes_and_countries(
@@ -113,6 +205,9 @@ def fetch_ch99_for_codes_and_countries(
             CAST(NULLIF(c.NEWRATE_CLEAN, '') AS REAL)                       AS ch99_newrate,
             c.RATE_MODIFIER                                                 AS ch99_rate_modifier,
             COALESCE(CAST(NULLIF(c.ADDITIONAL_DUTY_PCT, '') AS REAL), 0.0) AS ch99_additional_pct,
+            CAST(NULLIF(c.ADDITIONAL_VALUE, '') AS REAL)                    AS ch99_additional_value,
+            c.ADDITIONAL_VALUE                                             AS ch99_additional_value_raw,
+            c.ADDITIONAL_UNIT                                              AS ch99_additional_unit,
             c.TRADEPROGRAM                                                  AS ch99_tradeprogram,
             CAST(c.MATCH_PRIORITY AS INTEGER)                               AS ch99_match_priority
         FROM hts AS m
@@ -208,6 +303,7 @@ def _best_ch99_rule(
     )
     additive_rows = non_superseded_additive
     total_additive: float = 0.0
+    specific_components: list[str] = []
     for _, row in additive_rows.iterrows():
         v = row.get("ch99_additional_pct", 0.0)
         try:
@@ -216,6 +312,35 @@ def _best_ch99_rule(
                 total_additive += f
         except (TypeError, ValueError):
             pass
+
+        raw_specific = row.get("ch99_additional_value_raw")
+        specific_val = row.get("ch99_additional_value")
+        specific_unit = (row.get("ch99_additional_unit") or "").strip()
+        if raw_specific or specific_unit:
+            normalized_amount = (
+                _convert_specific_value(specific_val, specific_unit, raw_specific)
+                if specific_val is not None
+                else None
+            )
+            if raw_specific and (specific_val is None or specific_val != specific_val):
+                amount_text = raw_specific.strip()
+            elif specific_val is not None and specific_val == specific_val:
+                amount_text = _format_decimal_preserving(specific_val)
+            else:
+                amount_text = ""
+            text = amount_text
+            if specific_unit:
+                text = f"{text} {specific_unit}".strip()
+            label = row.get("ch99_tradeprogram") or ""
+            if label:
+                text = f"{text} ({label})" if text else label
+            specific_components.append(
+                {
+                    "amount": normalized_amount,
+                    "denominator": _normalize_denominator(specific_unit or raw_specific),
+                    "display": text.strip(),
+                }
+            )
 
     # Determine the representative trade program label
     if total_additive > 0 and not additive_rows.empty:
@@ -227,7 +352,11 @@ def _best_ch99_rule(
     else:
         tradeprogram = ""
 
-    if best_floor_rate is None and total_additive == 0.0:
+    specific_text = "; ".join(
+        comp["display"] for comp in specific_components if comp.get("display")
+    )
+
+    if best_floor_rate is None and total_additive == 0.0 and not specific_text:
         return None  # no usable rate content
 
     return {
@@ -238,6 +367,8 @@ def _best_ch99_rule(
         "ch99_additional_pct": total_additive,
         "ch99_tradeprogram": tradeprogram,
         "ch99_match_priority": int(candidates.iloc[0]["ch99_match_priority"]),
+        "ch99_specific_surcharge": specific_text,
+        "ch99_specific_components": specific_components,
     }
 
 
@@ -309,6 +440,8 @@ def _format_rate_columns(row: pd.Series) -> Tuple[str, str]:
     specific = _format_specific(row.get("specific_amount"), row.get("specific_unit"), row.get("specific_raw"))
     general_text = (row.get("general_duty_rate_text") or "").strip()
 
+    # When a duty has both ad valorem and specific components, the percent drives
+    # the chart/primary cell while the full mixed string remains in Base Rate.
     if row.get("chart_eligible"):
         primary = percent or (general_text if general_text else specific or "")
         secondary = specific if (row.get("has_specific") and specific and percent) else ""
@@ -378,6 +511,26 @@ def _build_display_table(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
     return display_df, column_headers
 
 
+def _summarize_specific_effects(df: pd.DataFrame) -> str | None:
+    if df.empty or "ch99_specific_surcharge" not in df.columns:
+        return None
+    subset = df[
+        df["ch99_specific_surcharge"].fillna("").astype(str).str.strip() != ""
+    ]
+    if subset.empty:
+        return None
+    bits: list[str] = []
+    for _, row in subset.iterrows():
+        specific_text = _format_specific(row.get("specific_amount"), row.get("specific_unit"), row.get("specific_raw"))
+        label = row.get("ch99_specific_surcharge")
+        descriptor = specific_text or label
+        if descriptor:
+            bits.append(f"{row.get('country')} {row.get('hts_code')}: {descriptor}")
+    if not bits:
+        return None
+    return "Ch.99 specific surcharges now fix the per-unit rates at " + "; ".join(bits) + "."
+
+
 def fetch_tariffs_for_codes(
     conn,
     selected_codes: list[str],
@@ -398,6 +551,20 @@ def fetch_tariffs_for_codes(
         return df
     df = df.rename(columns={"general_duty_rate": "general_duty_rate_text"})
     df["general_duty_rate_text"] = df["general_duty_rate_text"].fillna("").astype(str)
+    df["original_general_duty_rate_text"] = df["general_duty_rate_text"]
+    df["general_duty_rate_source_code"] = df["hts_code"]
+    inheritance_cache: dict[str, tuple[str, str | None]] = {}
+    missing_mask = df["general_duty_rate_text"].str.strip() == ""
+    if missing_mask.any():
+        for idx, row in df[missing_mask].iterrows():
+            fallback, source = _resolve_general_duty_rate(conn, row["hts_code"], inheritance_cache)
+            if fallback:
+                df.at[idx, "general_duty_rate_text"] = fallback
+                df.at[idx, "general_duty_rate_source_code"] = source or row["hts_code"]
+            else:
+                logger.warning(
+                    "No general duty rate found for %s or its ancestors", row["hts_code"]
+                )
     df["special_duty_rate"] = df["special_duty_rate"].fillna("").astype(str)
     parsed_rates = df["general_duty_rate_text"].apply(parse_general_duty)
 
@@ -526,6 +693,37 @@ def build_correlation_dataframe(
             program_code_summary = ""
             program_label_summary = ""
             applied_special = False
+            ch99_specific_text = ""
+
+            base_general_text = product_meta["general_duty_rate_text"]
+            duty_component_summary = product_meta["duty_component_summary"]
+            base_specific_amount = product_meta["specific_amount"]
+            base_specific_unit = product_meta["specific_unit"]
+            base_specific_raw = product_meta.get("specific_raw")
+            effective_specific_amount = base_specific_amount
+            effective_specific_unit = base_specific_unit
+            effective_specific_raw = base_specific_raw
+            duty_kind = product_meta["duty_kind"]
+            has_specific = product_meta["has_specific"]
+
+            base_duty_rate_obj = parse_general_duty(base_general_text)
+            if base_duty_rate_obj:
+                duty_kind = base_duty_rate_obj.kind or duty_kind
+                if base_duty_rate_obj.specific_amount is not None:
+                    effective_specific_amount = base_duty_rate_obj.specific_amount
+                if base_duty_rate_obj.specific_unit:
+                    effective_specific_unit = base_duty_rate_obj.specific_unit
+                has_specific = has_specific or base_duty_rate_obj.has_specific
+
+            base_has_ad_valorem = bool(
+                base_duty_rate_obj and base_duty_rate_obj.has_ad_valorem and base_duty_rate_obj.ad_valorem_rate is not None
+            )
+            base_duty_pct = base_duty_rate_obj.ad_valorem_rate if base_has_ad_valorem else None
+            effective_rate = base_duty_pct
+            ch99_applied = False
+            ch99_tradeprogram = None
+            ch99_delta = None
+
             if special_rule:
                 matching_codes = special_rule.codes_for_country(country_name)
                 if matching_codes:
@@ -539,62 +737,74 @@ def build_correlation_dataframe(
                     program_label_summary = special_rule.format_labels(special_rule.dynamic_codes)
                     unresolved_codes.update(special_rule.dynamic_codes)
 
-            general_text = product_meta["general_duty_rate_text"]
-            duty_kind = product_meta["duty_kind"]
-            specific_amount = product_meta["specific_amount"]
-            specific_unit = product_meta["specific_unit"]
-            specific_raw = product_meta.get("specific_raw")
-            duty_component_summary = product_meta["duty_component_summary"]
-            has_specific = product_meta["has_specific"]
-
             if applied_special and special_rule:
                 special_override_count += 1
-                duty_text = special_rule.rate_text or special_rule.raw_text or general_text
                 duty_rate = special_rule.duty_rate
-                general_text = duty_text
                 if duty_rate:
-                    has_specific = duty_rate.has_specific
-                    specific_amount = duty_rate.specific_amount
-                    specific_unit = duty_rate.specific_unit
-                    duty_kind = duty_rate.kind
-                    duty_component_summary = duty_text
-                    specific_raw = duty_text if duty_rate.has_specific else duty_text
-                else:
-                    duty_component_summary = duty_text
-
-            duty_rate_obj = parse_general_duty(general_text)
-            if duty_rate_obj:
-                duty_kind = duty_rate_obj.kind or duty_kind
-                has_specific = duty_rate_obj.has_specific or has_specific
-                if duty_rate_obj.specific_amount is not None:
-                    specific_amount = duty_rate_obj.specific_amount
-                if duty_rate_obj.specific_unit:
-                    specific_unit = duty_rate_obj.specific_unit
-            base_has_ad_valorem = bool(duty_rate_obj and duty_rate_obj.has_ad_valorem and duty_rate_obj.ad_valorem_rate is not None)
-            base_duty_pct = duty_rate_obj.ad_valorem_rate if base_has_ad_valorem else None
-            effective_rate = base_duty_pct
-            ch99_applied = False
-            ch99_tradeprogram = None
-            ch99_delta = None
+                    if duty_rate.ad_valorem_rate is not None:
+                        effective_rate = duty_rate.ad_valorem_rate
+                    if duty_rate.has_specific and duty_rate.specific_amount is not None:
+                        effective_specific_amount = duty_rate.specific_amount
+                        effective_specific_unit = duty_rate.specific_unit
+                        effective_specific_raw = duty_rate.raw_text
+                        has_specific = True
+                    duty_kind = duty_rate.kind or duty_kind
 
             if base_has_ad_valorem:
                 ch99_summary["n_total"] += 1
 
-            if ch99_available and base_has_ad_valorem:
-                rule = _best_ch99_rule(ch99_df, product_meta["hts_code"], country_name)
-                if rule is not None:
-                    adjusted_rate = apply_ch99_to_duty(duty_rate_obj, rule)
-                    if adjusted_rate is not None:
-                        effective_rate = adjusted_rate
-                        base_val = base_duty_pct or 0.0
-                        has_change = base_duty_pct is None or not math.isclose(adjusted_rate, base_val, rel_tol=1e-6)
-                        if has_change:
-                            ch99_applied = True
-                            ch99_delta = adjusted_rate - base_val if base_duty_pct is not None else adjusted_rate
-                            ch99_summary["n_adjusted"] += 1
-                        ch99_tradeprogram = rule.get("ch99_tradeprogram") or None
-                        if ch99_tradeprogram:
-                            ch99_programs.add(ch99_tradeprogram)
+            rule = _best_ch99_rule(ch99_df, product_meta["hts_code"], country_name) if ch99_available else None
+            if rule is not None and base_has_ad_valorem:
+                adjusted_rate = apply_ch99_to_duty(base_duty_rate_obj, rule)
+                if adjusted_rate is not None:
+                    effective_rate = adjusted_rate
+                    base_val = base_duty_pct or 0.0
+                    has_change = base_duty_pct is None or not math.isclose(adjusted_rate, base_val, rel_tol=1e-6)
+                    if has_change:
+                        ch99_applied = True
+                        ch99_delta = adjusted_rate - base_val if base_duty_pct is not None else adjusted_rate
+                        ch99_summary["n_adjusted"] += 1
+                    ch99_tradeprogram = rule.get("ch99_tradeprogram") or None
+                    if ch99_tradeprogram:
+                        ch99_programs.add(ch99_tradeprogram)
+
+            if rule is not None:
+                ch99_specific_text = rule.get("ch99_specific_surcharge") or ""
+                specific_components = rule.get("ch99_specific_components") or []
+                if specific_components:
+                    base_denom = _normalize_denominator(effective_specific_unit or base_specific_raw)
+                    total_increment = 0.0
+                    for comp in specific_components:
+                        inc = comp.get("amount")
+                        denom = comp.get("denominator")
+                        if inc is None:
+                            continue
+                        if denom and base_denom and denom != base_denom:
+                            logger.warning(
+                                "Skipped Ch.99 specific adder due to unit mismatch",
+                                extra={"hts_code": product_meta["hts_code"], "country": country_name, "denominator": denom},
+                            )
+                            continue
+                        if not base_denom and denom:
+                            base_denom = denom
+                        total_increment += inc
+                    if total_increment:
+                        effective_specific_amount = (effective_specific_amount or 0.0) + total_increment
+                        has_specific = True
+                        if not effective_specific_unit and base_denom:
+                            effective_specific_unit = f"/{base_denom}"
+                        effective_specific_raw = _decorate_specific_raw(
+                            effective_specific_amount,
+                            base_specific_raw,
+                            effective_specific_unit,
+                        )
+                if ch99_specific_text and not ch99_applied:
+                    ch99_tradeprogram = ch99_tradeprogram or rule.get("ch99_tradeprogram")
+                    ch99_label = f"Ch.99 ({ch99_tradeprogram})" if ch99_tradeprogram else "Ch.99 adjusted"
+                    if not rate_source or rate_source == "General":
+                        rate_source = ch99_label
+                    elif "Ch.99" not in rate_source:
+                        rate_source = f"{rate_source} · {ch99_label}"
 
             if ch99_applied:
                 rate_source = "Ch.99 adjusted"
@@ -615,12 +825,13 @@ def build_correlation_dataframe(
                     "ch99_applied": ch99_applied,
                     "ch99_tradeprogram": ch99_tradeprogram,
                     "ch99_delta": ch99_delta,
-                    "general_duty_rate_text": general_text,
+                    "ch99_specific_surcharge": ch99_specific_text,
+                    "general_duty_rate_text": base_general_text,
                     "duty_kind": duty_kind,
                     "duty_component_summary": duty_component_summary,
-                    "specific_amount": specific_amount,
-                    "specific_unit": specific_unit,
-                    "specific_raw": specific_raw,
+                    "specific_amount": effective_specific_amount,
+                    "specific_unit": effective_specific_unit,
+                    "specific_raw": effective_specific_raw,
                     "has_specific": has_specific,
                     "rate_source": rate_source,
                     "special_program_code": program_code_summary,
@@ -1081,6 +1292,9 @@ def maybe_run_analysis(
                         summary_text = f"{summary_text} {non_ad_text}"
                 else:
                     summary_text = "No overlapping tariff-risk data for the current selections."
+                specific_sentence = _summarize_specific_effects(corr_df_table)
+                if specific_sentence:
+                    summary_text = f"{summary_text}\n\n{specific_sentence}"
                 if placeholder:
                     placeholder.markdown(
                         f"<div class='bubble-bot'>{headline_html}{summary_text}</div>",
@@ -1116,6 +1330,14 @@ def maybe_run_analysis(
                 )
                 if non_ad_text:
                     summary_text = f"{summary_text}\n\n{non_ad_text}"
+                    if placeholder:
+                        placeholder.markdown(
+                            f"<div class='bubble-bot'>{headline_html}{summary_text}</div>",
+                            unsafe_allow_html=True,
+                        )
+                specific_sentence = _summarize_specific_effects(corr_df_table)
+                if specific_sentence:
+                    summary_text = f"{summary_text}\n\n{specific_sentence}"
                     if placeholder:
                         placeholder.markdown(
                             f"<div class='bubble-bot'>{headline_html}{summary_text}</div>",
