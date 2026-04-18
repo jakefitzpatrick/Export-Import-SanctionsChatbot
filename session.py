@@ -11,7 +11,7 @@ from utils import LAST_RESULT_KEY, LLM_CACHE_KEY
 # Allow the picker to load the full HTS list (~23k rows) while keeping a hard ceiling.
 MAX_PRODUCT_OPTIONS = 50000
 MAX_COUNTRY_SELECTION = 3
-MAX_PRODUCT_SELECTION = 3
+MAX_PRODUCT_SELECTION = 1
 DEFAULT_COUNTRY_SELECTION = ["Cameroon", "Russia"]
 
 

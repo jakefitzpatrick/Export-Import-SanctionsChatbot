@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from urllib.parse import quote
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -9,9 +8,9 @@ import streamlit as st
 
 
 def render_inline_iframe(html: str, *, height: int = 1) -> None:
-    """Embed inline HTML via a data URI since st.components.v1.html is deprecated."""
-    src = "data:text/html;charset=utf-8," + quote(html, safe="")
-    st.iframe(src, height=height)
+    """Embed inline HTML using st.components.v1.html."""
+    import streamlit.components.v1 as components
+    components.html(html, height=height, scrolling=False)
 
 
 def get_css() -> str:
