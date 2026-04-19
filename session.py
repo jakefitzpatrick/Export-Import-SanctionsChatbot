@@ -27,9 +27,7 @@ def bootstrap_session_state(
         "selected_countries",
         country_options[:MAX_COUNTRY_SELECTION] or DEFAULT_COUNTRY_SELECTION.copy(),
     )
-    st.session_state.setdefault("product_mode", "specific")
     st.session_state.setdefault("selected_products_display_specific", [])
-    st.session_state.setdefault("selected_products_display_categories", [])
     st.session_state.setdefault("selected_product_codes", [])
     st.session_state.setdefault("analysis_inflight", False)
     st.session_state.setdefault("analysis_active_run", None)
@@ -56,8 +54,6 @@ def reset_app_state() -> None:
     for widget_key in [
         "selected_countries",
         "selected_products_display_specific",
-        "selected_products_display_categories",
-        "product_mode",
     ]:
         st.session_state.pop(widget_key, None)
     st.session_state["selected_product_codes"] = []

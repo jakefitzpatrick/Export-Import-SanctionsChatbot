@@ -917,6 +917,31 @@ def render_correlation_chart(df: pd.DataFrame, mode: str = "ad_valorem") -> go.F
     df["Trade Program"] = df["ch99_tradeprogram"].fillna("—") if "ch99_tradeprogram" in df.columns else "—"
     df["Base Rate"] = df["general_duty_rate_text"] if "general_duty_rate_text" in df.columns else ""
 
+    def _apply_axes(fig_obj, *, y_title: str) -> None:
+        fig_obj.update_layout(
+            paper_bgcolor="#FFFFFF",
+            plot_bgcolor="#F7F9FC",
+            font=dict(color="#0F172A", size=13),
+            legend=dict(title="Country", bgcolor="rgba(255,255,255,0.8)", bordercolor="#E2E8F0", borderwidth=1),
+            margin=dict(l=18, r=18, t=40, b=10),
+        )
+        fig_obj.update_xaxes(
+            title=dict(text="Country Risk Score", font=dict(color="#0F172A", size=14)),
+            tickfont=dict(color="#0F172A"),
+            linecolor="#94A3B8",
+            linewidth=1.2,
+            gridcolor="#E2E8F0",
+            zerolinecolor="#CBD5E1",
+        )
+        fig_obj.update_yaxes(
+            title=dict(text=y_title, font=dict(color="#0F172A", size=14)),
+            tickfont=dict(color="#0F172A"),
+            linecolor="#94A3B8",
+            linewidth=1.2,
+            gridcolor="#E2E8F0",
+            zerolinecolor="#CBD5E1",
+        )
+
     if mode == "specific":
         plot_df = df[df["specific_amount"].notna()].copy() if "specific_amount" in df.columns else pd.DataFrame()
         if plot_df.empty:
@@ -945,14 +970,8 @@ def render_correlation_chart(df: pd.DataFrame, mode: str = "ad_valorem") -> go.F
                 "specific_amount": f"Duty Amount ({unit_label})",
             },
         )
-        fig.update_layout(
-            xaxis_title="Country Risk Score",
-            yaxis_title=f"Specific Duty Rate ({unit_label})",
-            legend_title="Country",
-            template="plotly_white",
-            margin=dict(l=10, r=10, t=40, b=10),
-        )
-        fig.update_traces(marker={"size": 12, "line": {"width": 1.5, "color": "rgba(0,0,0,0.25)"}})
+        _apply_axes(fig, y_title=f"Specific Duty Rate ({unit_label})")
+        fig.update_traces(marker={"size": 12, "line": {"width": 1.6, "color": "rgba(15,23,42,0.4)"}})
         return fig
 
     # --- ad_valorem mode ---
@@ -991,15 +1010,9 @@ def render_correlation_chart(df: pd.DataFrame, mode: str = "ad_valorem") -> go.F
             "Ch.99 Δ": True,
         },
     )
-    fig.update_layout(
-        xaxis_title="Country Risk Score",
-        yaxis_title="Effective Duty Rate (% ad valorem)",
-        legend_title="Country",
-        template="plotly_white",
-        margin=dict(l=10, r=10, t=40, b=10),
-    )
+    _apply_axes(fig, y_title="Effective Duty Rate (% ad valorem)")
     fig.update_xaxes(tickformat=".1f")
-    fig.update_traces(marker={"size": 12, "line": {"width": 1, "color": "rgba(0,0,0,0.3)"}})
+    fig.update_traces(marker={"size": 12, "line": {"width": 1.2, "color": "rgba(15,23,42,0.45)"}})
     if "ch99_applied" in plot_df.columns:
         adjusted = plot_df[plot_df["ch99_applied"]]
         if not adjusted.empty:
@@ -1236,139 +1249,143 @@ def maybe_run_analysis(
         extra={"analysis_run": run_id, "countries": countries, "products": products},
     )
 
+    status_placeholder = placeholder or st.empty()
+    status_message = status_placeholder.info("Running analysis…")
+
     try:
-        with st.spinner("Running analysis..."):
-            tariff_df = fetch_tariffs_for_codes(conn, products)
-            ch99_df = fetch_ch99_for_codes_and_countries(conn, products, countries)
-            (
-                corr_df_full,
-                corr_df_table,
-                non_ad_summary,
-                ch99_summary,
-                duty_exclusions,
-                has_specific_data,
-            ) = build_correlation_dataframe(countries, tariff_df, risk_df, ch99_df)
-            headline_source_df = corr_df_full if not corr_df_full.empty else corr_df_table
-            headline_text = _derive_headline(headline_source_df, countries, products)
-            timestamp = datetime.now().strftime("%I:%M %p")
-            risk_snapshot = build_risk_snapshot(risk_df, countries)
-            non_ad_text = _format_non_ad_summary_for_text(non_ad_summary)
-            duty_exclusion_message = None
-            if duty_exclusions:
-                preview_labels = [
-                    f"{item['hts_code']} ({item['general_duty_rate_text']})"
-                    for item in duty_exclusions[:3]
-                ]
-                preview = ", ".join(preview_labels)
-                extra = len(duty_exclusions) - len(preview_labels)
-                if extra > 0:
-                    preview = f"{preview}, +{extra} more"
-                duty_exclusion_message = (
-                    f"Skipped {len(duty_exclusions)} product-country pair(s) with non-percentage duties: {preview}."
-                )
-            if non_ad_summary.get("count"):
-                if non_ad_text:
-                    st.info(non_ad_text)
-                if duty_exclusion_message:
-                    st.warning(duty_exclusion_message)
-                logger.info(
-                    "Analysis run has non-ad duties",
-                    extra={"analysis_run": run_id, "non_ad_count": non_ad_summary.get("count")},
-                )
-            elif duty_exclusion_message:
-                st.warning(duty_exclusion_message)
-            headline_html = (
-                f"<p class='analysis-headline'><strong>{headline_text}</strong></p>" if headline_text else ""
+        tariff_df = fetch_tariffs_for_codes(conn, products)
+        ch99_df = fetch_ch99_for_codes_and_countries(conn, products, countries)
+        (
+            corr_df_full,
+            corr_df_table,
+            non_ad_summary,
+            ch99_summary,
+            duty_exclusions,
+            has_specific_data,
+        ) = build_correlation_dataframe(countries, tariff_df, risk_df, ch99_df)
+        headline_source_df = corr_df_full if not corr_df_full.empty else corr_df_table
+        headline_text = _derive_headline(headline_source_df, countries, products)
+        timestamp = datetime.now().strftime("%I:%M %p")
+        risk_snapshot = build_risk_snapshot(risk_df, countries)
+        non_ad_text = _format_non_ad_summary_for_text(non_ad_summary)
+        duty_exclusion_message = None
+        if duty_exclusions:
+            preview_labels = [
+                f"{item['hts_code']} ({item['general_duty_rate_text']})"
+                for item in duty_exclusions[:3]
+            ]
+            preview = ", ".join(preview_labels)
+            extra = len(duty_exclusions) - len(preview_labels)
+            if extra > 0:
+                preview = f"{preview}, +{extra} more"
+            duty_exclusion_message = (
+                f"Skipped {len(duty_exclusions)} product-country pair(s) with non-percentage duties: {preview}."
             )
 
-            if corr_df_full.empty:
-                if len(corr_df_table) and non_ad_summary.get("count"):
-                    summary_text = (
-                        "All selected products currently rely on quantity- or rule-based duty rates, so no ad valorem analysis is available."
-                    )
-                    if non_ad_text:
-                        summary_text = f"{summary_text} {non_ad_text}"
-                else:
-                    summary_text = "No overlapping tariff-risk data for the current selections."
-                specific_sentence = _summarize_specific_effects(corr_df_table)
-                if specific_sentence:
-                    summary_text = f"{summary_text}\n\n{specific_sentence}"
+        if non_ad_summary.get("count"):
+            if non_ad_text:
+                st.info(non_ad_text)
+            if duty_exclusion_message:
+                st.warning(duty_exclusion_message)
+            logger.info(
+                "Analysis run has non-ad duties",
+                extra={"analysis_run": run_id, "non_ad_count": non_ad_summary.get("count")},
+            )
+        elif duty_exclusion_message:
+            st.warning(duty_exclusion_message)
+
+        headline_html = (
+            f"<p class='analysis-headline'><strong>{headline_text}</strong></p>" if headline_text else ""
+        )
+
+        if corr_df_full.empty:
+            if len(corr_df_table) and non_ad_summary.get("count"):
+                summary_text = (
+                    "All selected products currently rely on quantity- or rule-based duty rates, so no ad valorem analysis is available."
+                )
+                if non_ad_text:
+                    summary_text = f"{summary_text} {non_ad_text}"
+            else:
+                summary_text = "No overlapping tariff-risk data for the current selections."
+            specific_sentence = _summarize_specific_effects(corr_df_table)
+            if specific_sentence:
+                summary_text = f"{summary_text}\n\n{specific_sentence}"
+            if placeholder:
+                placeholder.markdown(
+                    f"<div class='bubble-bot'>{headline_html}{summary_text}</div>",
+                    unsafe_allow_html=True,
+                )
+            display_table, display_columns = _build_display_table(corr_df_table)
+            append_message(
+                {
+                    "role": "assistant",
+                    "content": summary_text,
+                    "time": timestamp,
+                    "type": "analysis",
+                    "chart_data": display_table.to_dict("records"),
+                    "chart_columns": display_columns,
+                    "risk_snapshot": risk_snapshot,
+                    "selections": {
+                        "countries": countries,
+                        "products": products,
+                    },
+                    "non_ad_summary": non_ad_summary,
+                    "non_ad_summary_text": non_ad_text,
+                    "headline": headline_text,
+                    "ch99_summary": ch99_summary,
+                    "duty_exclusions": duty_exclusions,
+                    "duty_exclusion_message": duty_exclusion_message,
+                    "has_specific_data": has_specific_data,
+                }
+            )
+        else:
+            fig = render_correlation_chart(corr_df_full)
+            summary_text = stream_analysis_to_placeholder(
+                corr_df_full, deployment_id, placeholder, headline=headline_text
+            )
+            if non_ad_text:
+                summary_text = f"{summary_text}\n\n{non_ad_text}"
                 if placeholder:
                     placeholder.markdown(
                         f"<div class='bubble-bot'>{headline_html}{summary_text}</div>",
                         unsafe_allow_html=True,
                     )
-                display_table, display_columns = _build_display_table(corr_df_table)
-                append_message(
-                    {
-                        "role": "assistant",
-                        "content": summary_text,
-                        "time": timestamp,
-                        "type": "analysis",
-                        "chart_data": display_table.to_dict("records"),
-                        "chart_columns": display_columns,
-                        "risk_snapshot": risk_snapshot,
-                        "selections": {
-                            "countries": countries,
-                            "products": products,
-                        },
-                        "non_ad_summary": non_ad_summary,
-                        "non_ad_summary_text": non_ad_text,
-                        "headline": headline_text,
-                        "ch99_summary": ch99_summary,
-                        "duty_exclusions": duty_exclusions,
-                        "duty_exclusion_message": duty_exclusion_message,
-                        "has_specific_data": has_specific_data,
-                    }
-                )
-            else:
-                fig = render_correlation_chart(corr_df_full)
-                summary_text = stream_analysis_to_placeholder(
-                    corr_df_full, deployment_id, placeholder, headline=headline_text
-                )
-                if non_ad_text:
-                    summary_text = f"{summary_text}\n\n{non_ad_text}"
-                    if placeholder:
-                        placeholder.markdown(
-                            f"<div class='bubble-bot'>{headline_html}{summary_text}</div>",
-                            unsafe_allow_html=True,
-                        )
-                specific_sentence = _summarize_specific_effects(corr_df_table)
-                if specific_sentence:
-                    summary_text = f"{summary_text}\n\n{specific_sentence}"
-                    if placeholder:
-                        placeholder.markdown(
-                            f"<div class='bubble-bot'>{headline_html}{summary_text}</div>",
-                            unsafe_allow_html=True,
-                        )
-                display_table, display_columns = _build_display_table(corr_df_table)
-                append_message(
-                    {
-                        "role": "assistant",
-                        "content": summary_text,
-                        "time": timestamp,
-                        "type": "analysis",
-                        "plotly_fig": fig.to_dict() if fig else None,
-                        # raw_chart_data/raw_chart_columns: full corr_df_full for toggle re-rendering
-                        "raw_chart_data": corr_df_full.to_dict("records"),
-                        "raw_chart_columns": corr_df_full.columns.tolist(),
-                        # chart_data/chart_columns: formatted display table
-                        "chart_data": display_table.to_dict("records"),
-                        "chart_columns": display_columns,
-                        "risk_snapshot": risk_snapshot,
-                        "selections": {
-                            "countries": countries,
-                            "products": products,
-                        },
-                        "non_ad_summary": non_ad_summary,
-                        "non_ad_summary_text": non_ad_text,
-                        "headline": headline_text,
-                        "ch99_summary": ch99_summary,
-                        "duty_exclusions": duty_exclusions,
-                        "duty_exclusion_message": duty_exclusion_message,
-                        "has_specific_data": has_specific_data,
-                    }
-                )
+            specific_sentence = _summarize_specific_effects(corr_df_table)
+            if specific_sentence:
+                summary_text = f"{summary_text}\n\n{specific_sentence}"
+                if placeholder:
+                    placeholder.markdown(
+                        f"<div class='bubble-bot'>{headline_html}{summary_text}</div>",
+                        unsafe_allow_html=True,
+                    )
+            display_table, display_columns = _build_display_table(corr_df_table)
+            append_message(
+                {
+                    "role": "assistant",
+                    "content": summary_text,
+                    "time": timestamp,
+                    "type": "analysis",
+                    "plotly_fig": fig.to_dict() if fig else None,
+                    # raw_chart_data/raw_chart_columns: full corr_df_full for toggle re-rendering
+                    "raw_chart_data": corr_df_full.to_dict("records"),
+                    "raw_chart_columns": corr_df_full.columns.tolist(),
+                    # chart_data/chart_columns: formatted display table
+                    "chart_data": display_table.to_dict("records"),
+                    "chart_columns": display_columns,
+                    "risk_snapshot": risk_snapshot,
+                    "selections": {
+                        "countries": countries,
+                        "products": products,
+                    },
+                    "non_ad_summary": non_ad_summary,
+                    "non_ad_summary_text": non_ad_text,
+                    "headline": headline_text,
+                    "ch99_summary": ch99_summary,
+                    "duty_exclusions": duty_exclusions,
+                    "duty_exclusion_message": duty_exclusion_message,
+                    "has_specific_data": has_specific_data,
+                }
+            )
             st.session_state["correlation_signature"] = signature
             success = True
             logger.info(
@@ -1390,6 +1407,7 @@ def maybe_run_analysis(
             )
         st.error(f"Correlation analysis failed: {exc}")
     finally:
+        status_message.empty()
         if st.session_state.get("analysis_active_run") == run_id:
             st.session_state["analysis_inflight"] = False
             st.session_state["analysis_active_run"] = None

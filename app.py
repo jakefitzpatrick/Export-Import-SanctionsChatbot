@@ -3,7 +3,6 @@ import logging
 import os
 import sqlite3
 import uuid
-from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
@@ -39,7 +38,8 @@ from app_ui import (
     get_css,
     render_sidebar,
     render_context_panel,
-    render_inline_iframe,
+    render_chat_feed,
+    render_chat_composer,
 )
 
 load_dotenv()
@@ -53,6 +53,19 @@ def _handle_sidebar_clear() -> None:
     """Reset chat selections via sidebar action."""
     reset_app_state()
     logger.info("Chat cleared from sidebar button")
+    st.rerun()
+
+
+def _handle_clear_inputs() -> None:
+    """Clear only country/product selections while leaving chat history intact."""
+    st.session_state["selected_countries"] = []
+    st.session_state["selected_products_display_specific"] = []
+    st.session_state["selected_product_codes"] = []
+    st.session_state["correlation_signature"] = None
+    st.session_state["analysis_request"] = None
+    st.session_state["analysis_active_run"] = None
+    st.session_state["analysis_inflight"] = False
+    logger.info("Cleared country/product selections from main panel button")
     st.rerun()
 
 
@@ -417,44 +430,11 @@ def main() -> None:
             }
         )
 
-    # Split options into specific (10-digit) and category (8-digit) codes.
-    category_lookup: dict[str, dict[str, str]] = {}
-    category_children: defaultdict[str, list[str]] = defaultdict(list)
-    specific_rows: list[dict[str, str]] = []
-    for row in product_option_rows:
-        code = row["code"]
-        segments = code.split(".")
-        if len(segments) >= 4:
-            specific_rows.append(row)
-            parent_code = ".".join(segments[:3])
-            category_children[parent_code].append(code)
-        else:
-            category_lookup[code] = row
-
-    categories_rows: list[dict[str, str]] = []
-    for code, row in sorted(category_lookup.items()):
-        children = sorted(category_children.get(code, []))
-        if not children:
-            continue
-        base_label = row["label"]
-        label = f"{base_label} ({len(children)} items)"
-        categories_rows.append(
-            {
-                "code": code,
-                "label": label,
-                "full": row["full"],
-                "children": children,
-            }
-        )
-
-    specific_rows.sort(key=lambda r: r["code"])
-
-    specific_display_options = [row["label"] for row in specific_rows]
-    category_display_options = [row["label"] for row in categories_rows]
-    specific_code_map = {row["label"]: row["code"] for row in specific_rows}
-    category_code_map = {row["label"]: row["code"] for row in categories_rows}
-    category_children_map = {row["code"]: row["children"] for row in categories_rows}
-    code_map = specific_code_map.copy()
+    product_option_rows.sort(key=lambda r: r["code"])
+    all_display_options = [row["label"] for row in product_option_rows]
+    all_code_map = {row["label"]: row["code"] for row in product_option_rows}
+    code_label_map = {row["code"]: row["label"] for row in product_option_rows}
+    code_map = all_code_map
     if "messages" not in st.session_state:
         st.session_state.messages = []
     st.session_state.setdefault(LAST_RESULT_KEY, None)
@@ -462,17 +442,12 @@ def main() -> None:
         st.session_state["selected_countries"] = (
             country_options[:MAX_COUNTRY_SELECTION] or DEFAULT_COUNTRY_SELECTION.copy()
         )
-    st.session_state.setdefault("product_mode", "specific")
     if "selected_products_display_specific" not in st.session_state:
-        # Only seed default specific codes if the current mode is specific,
-        # so category mode starts with a clean slate.
-        if st.session_state.get("product_mode", "specific") == "specific":
-            st.session_state["selected_products_display_specific"] = (
-                specific_display_options[: min(MAX_PRODUCT_SELECTION, len(specific_display_options))]
-                if specific_display_options
-                else []
-            )
-    st.session_state.setdefault("selected_products_display_categories", [])
+        st.session_state["selected_products_display_specific"] = (
+            all_display_options[: min(MAX_PRODUCT_SELECTION, len(all_display_options))]
+            if all_display_options
+            else []
+        )
     st.session_state.setdefault("selected_product_codes", [])
     st.session_state.setdefault("analysis_inflight", False)
     st.session_state.setdefault("analysis_active_run", None)
@@ -489,35 +464,19 @@ def main() -> None:
         "selected_products_display_specific",
         MAX_PRODUCT_SELECTION,
     )
-    selected_category_display, category_trimmed = enforce_selection_limit(
-        "selected_products_display_categories",
-        MAX_PRODUCT_SELECTION,
-    )
-
     render_sidebar(_handle_sidebar_clear)
 
     analysis_running = st.session_state.get("analysis_inflight", False)
-    picker_options = {
-        "specific": {
-            "options": specific_display_options,
-            "code_map": specific_code_map,
-        },
-        "categories": {
-            "options": category_display_options,
-            "code_map": category_code_map,
-            "children": category_children_map,
-        },
-    }
     selected_products, analyse_clicked = render_context_panel(
         country_options=country_options,
-        picker_options=picker_options,
+        product_options=all_display_options,
+        code_map=code_map,
         max_country=MAX_COUNTRY_SELECTION,
         max_products=MAX_PRODUCT_SELECTION,
         country_trimmed=country_trimmed,
         specific_trimmed=specific_trimmed,
-        category_trimmed=category_trimmed,
         analysis_running=analysis_running,
-        on_clear_chat=_handle_sidebar_clear,
+        on_clear_chat=_handle_clear_inputs,
         logger=logger,
     )
     selected_countries = st.session_state.get("selected_countries", [])
@@ -558,96 +517,91 @@ def main() -> None:
     if _has_specific:
         st.session_state["chart_mode"] = "specific" if show_specific else "ad_valorem"
 
-    analysis_stream_placeholder: st.delta_generator.DeltaGenerator | None = None
-    chat_feed = st.container()
-    composer = st.container()
+    _latest_analysis_msg = next(
+        (m for m in reversed(st.session_state.get("messages", [])) if m.get("type") == "analysis"),
+        None,
+    )
+    context_panel_html = None
+    if _latest_analysis_msg:
+        _ctx_rows = _latest_analysis_msg.get("chart_data") or []
+        if _ctx_rows:
+            def _get(row, field):
+                if isinstance(row, dict):
+                    return row.get(field, "—") or "—"
+                return "—"
 
-    with composer:
-        st.markdown('<div data-composer="true"></div>', unsafe_allow_html=True)
+            _hts_codes = list(dict.fromkeys(_get(r, "HTS Code") for r in _ctx_rows))
+            _hts_label = ", ".join(str(c) for c in _hts_codes if c and c != "—") or "—"
+            _product = _get(_ctx_rows[0], "Product")
 
-        # Tariff context panel — shown when there is a completed analysis
-        _latest_analysis_msg = next(
-            (m for m in reversed(st.session_state.get("messages", [])) if m.get("type") == "analysis"),
-            None,
-        )
-        if _latest_analysis_msg:
-            _ctx_rows = _latest_analysis_msg.get("chart_data") or []
-            if _ctx_rows:
-                def _get(row, field):
-                    # chart_data is stored as to_dict("records") — rows are dicts
-                    if isinstance(row, dict):
-                        return row.get(field, "—") or "—"
-                    return "—"
+            _rows_html = ""
+            for row in _ctx_rows:
+                country = _get(row, "Country")
+                base = _get(row, "Base Rate")
+                eff = _get(row, "Effective Rate (%)")
+                delta = _get(row, "Ch.99 Δ")
+                program = _get(row, "Trade Program")
+                source = _get(row, "Rate Source")
+                risk = _get(row, "Risk Score")
 
-                _hts_codes = list(dict.fromkeys(_get(r, "HTS Code") for r in _ctx_rows))
-                _hts_label = ", ".join(str(c) for c in _hts_codes if c and c != "—") or "—"
-                _product = _get(_ctx_rows[0], "Product")
+                delta_str = f"{delta}" if delta not in (None, "—", "") else "—"
+                program_str = f" ({program})" if program not in (None, "—", "") else ""
+                _rows_html += (
+                    f"<tr>"
+                    f"<td>{country}</td>"
+                    f"<td>{risk}</td>"
+                    f"<td>{base}</td>"
+                    f"<td>{eff}%</td>"
+                    f"<td>{delta_str}{program_str}</td>"
+                    f"<td style='color:#64748b;font-size:11px;'>{source}</td>"
+                    f"</tr>"
+                )
 
-                _rows_html = ""
-                for row in _ctx_rows:
-                    country = _get(row, "Country")
-                    base = _get(row, "Base Rate")
-                    eff = _get(row, "Effective Rate (%)")
-                    delta = _get(row, "Ch.99 Δ")
-                    program = _get(row, "Trade Program")
-                    source = _get(row, "Rate Source")
-                    risk = _get(row, "Risk Score")
-
-                    delta_str = f"{delta}" if delta not in (None, "—", "") else "—"
-                    program_str = f" ({program})" if program not in (None, "—", "") else ""
-                    _rows_html += (
-                        f"<tr>"
-                        f"<td>{country}</td>"
-                        f"<td>{risk}</td>"
-                        f"<td>{base}</td>"
-                        f"<td>{eff}%</td>"
-                        f"<td>{delta_str}{program_str}</td>"
-                        f"<td style='color:#64748b;font-size:11px;'>{source}</td>"
-                        f"</tr>"
-                    )
-
-                _panel_html = f"""
-                <style>
-                .tariff-ctx {{ font-size:12px; color:#1F2937; margin-bottom:8px; }}
-                .tariff-ctx summary {{ cursor:pointer; font-size:11px; font-weight:600;
-                    color:#0B2A4A; letter-spacing:0.04em; text-transform:uppercase;
-                    padding:4px 0; user-select:none; }}
-                .tariff-ctx table {{ width:100%; border-collapse:collapse; margin-top:6px; }}
-                .tariff-ctx th {{ font-size:10px; font-weight:600; color:#64748b;
-                    text-transform:uppercase; letter-spacing:0.06em;
-                    padding:3px 8px; border-bottom:1px solid #E5E7EB; text-align:left; }}
-                .tariff-ctx td {{ padding:4px 8px; border-bottom:1px solid #F1F5F9; vertical-align:top; }}
-                .tariff-ctx tr:last-child td {{ border-bottom:none; }}
-                </style>
-                <details class="tariff-ctx">
-                  <summary>Current analysis context — {_hts_label} · {_product}</summary>
-                  <table>
-                    <thead><tr>
-                      <th>Country</th><th>Risk</th><th>Base Rate</th>
-                      <th>Effective Rate</th><th>Ch.99 Surcharge</th><th>Source</th>
-                    </tr></thead>
-                    <tbody>{_rows_html}</tbody>
-                  </table>
-                </details>
-                """
-                st.markdown(_panel_html, unsafe_allow_html=True)
-
-        prompt = st.chat_input(QUESTION_PLACEHOLDER, key="chat_input")
-        st.markdown(
-            """
+            context_panel_html = f"""
             <style>
-            .sample-prompts { display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; }
-            .sample-prompt { font-size:11px; color:#0B2A4A; background:#F0F4F8;
-                border:1px solid #CBD5E1; border-radius:999px; padding:4px 12px; cursor:default; }
+            .tariff-ctx {{ font-size:12px; color:#1F2937; margin-bottom:8px; }}
+            .tariff-ctx summary {{ cursor:pointer; font-size:11px; font-weight:600;
+                color:#0B2A4A; letter-spacing:0.04em; text-transform:uppercase;
+                padding:4px 0; user-select:none; }}
+            .tariff-ctx table {{ width:100%; border-collapse:collapse; margin-top:6px; }}
+            .tariff-ctx th {{ font-size:10px; font-weight:600; color:#64748b;
+                text-transform:uppercase; letter-spacing:0.06em;
+                padding:3px 8px; border-bottom:1px solid #E5E7EB; text-align:left; }}
+            .tariff-ctx td {{ padding:4px 8px; border-bottom:1px solid #F1F5F9; vertical-align:top; }}
+            .tariff-ctx tr:last-child td {{ border-bottom:none; }}
             </style>
-            <div class='sample-prompts'>
-              <span class='sample-prompt'>Which country has the lowest effective duty rate?</span>
-              <span class='sample-prompt'>Why do the rates differ across countries?</span>
-              <span class='sample-prompt'>What trade program is driving the surcharge?</span>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+            <details class="tariff-ctx">
+              <summary>Current analysis context — {_hts_label} · {_product}</summary>
+              <table>
+                <thead><tr>
+                  <th>Country</th><th>Risk</th><th>Base Rate</th>
+                  <th>Effective Rate</th><th>Ch.99 Surcharge</th><th>Source</th>
+                </tr></thead>
+                <tbody>{_rows_html}</tbody>
+              </table>
+            </details>
+            """
+
+    chat_zone = st.container()
+
+    sample_prompts_html = """
+    <style>
+    .sample-prompts { display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; }
+    .sample-prompt { font-size:11px; color:#0B2A4A; background:#F0F4F8;
+        border:1px solid #CBD5E1; border-radius:999px; padding:4px 12px; cursor:default; }
+    </style>
+    <div class='sample-prompts'>
+      <span class='sample-prompt'>Which country has the lowest effective duty rate?</span>
+      <span class='sample-prompt'>Why do the rates differ across countries?</span>
+      <span class='sample-prompt'>What trade program is driving the surcharge?</span>
+    </div>
+    """
+
+    prompt = render_chat_composer(
+        QUESTION_PLACEHOLDER,
+        pre_html=context_panel_html,
+        post_html=sample_prompts_html,
+    )
 
     if prompt is not None:
         question = prompt.strip()
@@ -674,143 +628,21 @@ def main() -> None:
                 {"role": "assistant", "content": assistant_text, "time": datetime.now().strftime("%I:%M %p")}
             )
 
-    with chat_feed:
-        st.markdown('<div data-chat="true"></div>', unsafe_allow_html=True)
-        if len(st.session_state.messages) == 0:
-            st.markdown(
-                "<div class='empty-chat'>Select countries and an HTS product above, then click Analyze.</div>",
-                unsafe_allow_html=True,
-            )
-        for msg in st.session_state.messages:
-            timestamp = msg.get("time", "")
-            if msg["role"] == "user":
-                st.markdown(
-                    f"<div class='bubble-label bubble-label-right'>You</div><div class='bubble-user'>{msg['content']}</div><div class='timestamp timestamp-right'>{timestamp}</div><div class='clearfix'></div>",
-                    unsafe_allow_html=True,
-                )
-                continue
-
-            if msg.get("type") == "analysis":
-                st.markdown(
-                    "<div class='bubble-label'>Assistant</div>",
-                    unsafe_allow_html=True,
-                )
-                selections = msg.get("selections", {})
-                selection_text = []
-                if selections.get("countries"):
-                    selection_text.append("Countries: " + ", ".join(selections["countries"]))
-                if selections.get("products"):
-                    readable = []
-                    for raw_code in selections["products"]:
-                        match = next(
-                            (lbl for lbl, code in code_map.items() if code == raw_code),
-                            None,
-                        )
-                        readable.append(match.split(" — ", 1)[-1] if match else raw_code)
-                    selection_text.append("Products: " + ", ".join(readable))
-                if selection_text:
-                    st.markdown(
-                        f"<div class='analysis-meta'>{' · '.join(selection_text)}</div>",
-                        unsafe_allow_html=True,
-                    )
-
-                # Scatterplot — rebuilt live from raw data so toggle takes effect instantly
-                _raw_data = msg.get("raw_chart_data")
-                _raw_cols = msg.get("raw_chart_columns")
-                _chart_data = msg.get("chart_data")
-                _chart_cols = msg.get("chart_columns")
-
-                if _raw_data and _raw_cols:
-                    # New-style message with raw data for toggle re-rendering
-                    _chart_df = pd.DataFrame(_raw_data, columns=_raw_cols)
-                    _mode = st.session_state.get("chart_mode", "ad_valorem")
-                    fig = render_correlation_chart(_chart_df, mode=_mode)
-                    if fig:
-                        st.plotly_chart(fig, width="stretch")
-                        if _mode == "ad_valorem":
-                            st.caption(
-                                "Orange ring = effective rate modified by a Chapter 99 surcharge or trade program override."
-                            )
-                        else:
-                            st.caption(
-                                "Y axis shows the specific duty amount from the HTS table. "
-                                "Ch.99 percentage surcharges are not applied in this view."
-                            )
-                elif msg.get("plotly_fig"):
-                    # Fallback: render stored static figure
-                    fig = go.Figure(msg["plotly_fig"])
-                    st.plotly_chart(fig, width="stretch")
-
-                headline = msg.get("headline")
-                body_html = msg["content"]
-                if headline:
-                    body_html = f"<p class='analysis-headline'><strong>{headline}</strong></p>{body_html}"
-                st.markdown(
-                    f"<div class='bubble-bot'>{body_html}</div><div class='timestamp'>{timestamp}</div><div class='clearfix'></div>",
-                    unsafe_allow_html=True,
-                )
-                non_ad_summary_text = msg.get("non_ad_summary_text")
-                if non_ad_summary_text:
-                    st.info(non_ad_summary_text)
-                risk_snapshot = msg.get("risk_snapshot") or []
-                if risk_snapshot:
-                    pills_html = "".join(
-                        f"<div class='risk-pill' style='border-left-color:{snap['color']};'>"
-                        f"<strong>{snap['country']}</strong>"
-                        f"Score {snap['score']:.1f} · {snap['level']}"
-                        "</div>"
-                        for snap in risk_snapshot
-                    )
-                    st.markdown(f"<div class='risk-pills'>{pills_html}</div>", unsafe_allow_html=True)
-                # Display table — use formatted display data if available
-                if _chart_data and _chart_cols:
-                    chart_df = pd.DataFrame(_chart_data, columns=_chart_cols)
-                    st.dataframe(chart_df)
-                continue
-
-            st.markdown(
-                f"<div class='bubble-label'>Assistant</div><div class='bubble-bot'>{msg['content']}</div><div class='timestamp'>{timestamp}</div><div class='clearfix'></div>",
-                unsafe_allow_html=True,
-            )
-
-        analysis_stream_placeholder = st.empty()
-        latest_result = st.session_state.get(LAST_RESULT_KEY)
-        if latest_result:
-            st.markdown("---")
-            st.markdown("### Last SQL Result")
-            st.code(latest_result["sql"], language="sql")
-            st.caption(
-                f"Returned {latest_result['row_count']} row(s); showing {latest_result['rows_displayed']} row(s) below."
-            )
-            if latest_result["records"]:
-                st.dataframe(
-                    pd.DataFrame(latest_result["records"], columns=latest_result["columns"])
-                )
-            else:
-                st.info("The last query returned no rows.")
-        st.markdown('<div data-anchor="chat-end" id="chat-end"></div>', unsafe_allow_html=True)
-        if analysis_stream_placeholder is None:
-            analysis_stream_placeholder = st.empty()
-        maybe_run_analysis(
-            conn,
-            deployment_id,
-            risk_df,
-            analysis_stream_placeholder,
+    latest_result = st.session_state.get(LAST_RESULT_KEY)
+    with chat_zone:
+        analysis_stream_placeholder = render_chat_feed(
+            st.session_state.get("messages", []),
+            latest_result,
+            code_lookup=code_label_map,
+            chart_mode=st.session_state.get("chart_mode", "ad_valorem"),
+            render_chart=render_correlation_chart,
         )
 
-    render_inline_iframe(
-        """
-        <script>
-        const marker = window.parent.document.querySelector('div[data-anchor="chat-end"]');
-        if (marker) {
-            const chatBlock = marker.closest('div[data-testid="stVerticalBlock"]');
-            if (chatBlock) {
-                chatBlock.scrollTop = chatBlock.scrollHeight;
-            }
-        }
-        </script>
-        """,
-        height=1,
+    maybe_run_analysis(
+        conn,
+        deployment_id,
+        risk_df,
+        analysis_stream_placeholder,
     )
 
 if __name__ == "__main__":

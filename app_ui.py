@@ -19,47 +19,85 @@ def get_css() -> str:
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
     :root {
         --navy:#0B2A4A;
-        --muted:#94A3AF;
-        --border:#E5E7EB;
+        --border:#CBD5E1;
+        --border-strong:#94A3B8;
         --card:#FFFFFF;
-        --accent:#1A3A5C;
+        --surface-muted:#EEF2F7;
+        --accent:#0B2A4A;
+        --text-primary:#0F172A;
+        --text-secondary:#1F2937;
+        --text-muted:#374151;
+        --chip-selected-bg:#0B2A4A;
+        --chip-selected-border:#062340;
+        --chip-focus:#1D4ED8;
     }
     html, body, [class*="css"] {
         font-family: 'Inter', sans-serif;
         background:#ffffff;
-        color:#0B2239;
+        color:var(--text-primary);
     }
     .stApp, .stApp > div, section.main { min-height: 100vh; background:#ffffff; }
     section.main > div.block-container {
         display:flex;
         flex-direction:column;
-        height:100vh;
+        min-height:100vh;
         padding:0;
     }
-    div[data-testid="stVerticalBlock"]:has(> div[data-context="true"]) {
+    section.main > div.block-container > div[data-testid="stVerticalBlock"] {
+        display:flex;
+        flex-direction:column;
+        flex:0 0 auto;
+    }
+    section.main > div.block-container > div[data-testid="stVerticalBlock"] > .layout-zone {
+        width:100%;
+    }
+    section.main > div.block-container > div[data-testid="stVerticalBlock"] > .layout-zone--chat {
+        flex:1 1 auto;
+        min-height:0;
+    }
+    .layout-zone--inputs {
+        order:1;
         flex-shrink:0;
         padding:10px 28px 8px;
         border-bottom:1px solid var(--border);
         background:#fff;
         z-index:20;
     }
-    div[data-testid="stVerticalBlock"]:has(> div[data-chat="true"]) {
+    .layout-zone--chat {
+        order:2;
+        flex:1 1 auto;
+        min-height:0;
+        padding:8px 28px 8px;
+        background:#ffffff;
+        display:flex;
+        flex-direction:column;
+    }
+    .layout-zone--composer {
+        order:3;
+        flex-shrink:0;
+        padding:6px 28px 12px;
+        border-top:none;
+        background:transparent;
+        box-shadow:none;
+    }
+    .layout-zone--chat div[data-chat="true"] {
         flex:1;
         overflow-y:auto;
-        padding:0 28px 16px;
-        background:#f7f8fb;
+        background:#FDFDFE;
+        border-radius:18px;
+        padding:4px 12px 16px;
+        box-shadow:0 8px 24px rgba(15,23,42,0.08);
     }
-    div[data-testid="stVerticalBlock"]:has(> div[data-composer="true"]) {
-        flex-shrink:0;
-        padding:12px 28px 18px;
-        border-top:1px solid var(--border);
-        background:#fff;
-        box-shadow:0 -4px 16px rgba(11,34,57,0.05);
-    }
-    [data-testid="stSidebar"] { background: var(--navy); color:#e7edf5; }
+    [data-testid="stSidebar"] { background: var(--navy); color:#E2E8F0; }
     [data-testid="stSidebar"] img { filter:brightness(0) invert(1); margin-bottom:12px; }
-    .sidebar-mono { font-size:9.5px; text-transform:uppercase; letter-spacing:0.08em; color:rgba(255,255,255,0.35); }
-    .sidebar-tag { display:inline-flex; align-items:center; gap:6px; padding:3px 10px; border-radius:999px; font-size:11px; background:rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,0.18); color:#F8FAFC; }
+    .sidebar-mono { font-size:9.5px; text-transform:uppercase; letter-spacing:0.08em; color:#CBD5F5; }
+    .sidebar-tag { display:inline-flex; align-items:center; gap:6px; padding:3px 10px; border-radius:999px; font-size:11px; background:#F8FAFC; border:1px solid #CBD2D9; color:#0F2342; font-weight:600; }
+    [data-testid="stSidebar"] .stMarkdown,
+    [data-testid="stSidebar"] .stMarkdown p,
+    [data-testid="stSidebar"] p,
+    [data-testid="stSidebar"] .stCaption {
+        color:#F5F7FF !important;
+    }
     .bubble-user, .bubble-bot {
         transition:transform 0.15s ease, box-shadow 0.15s ease;
         border-radius:18px;
@@ -69,24 +107,112 @@ def get_css() -> str:
         font-size:14px;
     }
     .bubble-user { background:#1a3a5c; color:#fff; margin:4px 0 4px auto; box-shadow:0 2px 6px rgba(26,58,92,0.25); }
-    .bubble-bot { background:#fff; color:#0f172a; border:1px solid #e2e8f0; margin:4px auto 4px 0; box-shadow:0 2px 8px rgba(0,0,0,0.05); }
+    .bubble-bot { background:#fff; color:var(--text-primary); border:1px solid #E2E8F0; margin:4px auto 4px 0; box-shadow:0 6px 18px rgba(15,23,42,0.08); }
     .bubble-bot-wrap:hover .bubble-bot, .bubble-user:hover {
         transform:translateY(-2px);
         box-shadow:0 8px 20px rgba(15,31,56,0.12);
     }
-    .bubble-label { font-size:10px; letter-spacing:0.08em; text-transform:uppercase; color:var(--muted); margin-bottom:2px; }
+    .bubble-label { font-size:10px; letter-spacing:0.08em; text-transform:uppercase; color:var(--text-secondary); margin-bottom:2px; }
     .bubble-label-right { text-align:right; }
-    .timestamp, .timestamp-right { font-size:10px; color:#cbd5e1; margin-top:4px; }
+    .timestamp, .timestamp-right { font-size:10px; color:var(--text-muted); margin-top:4px; }
     .timestamp-right { text-align:right; }
-    .analysis-meta { font-size:12px; color:#94a3b8; margin-bottom:6px; }
-    .analysis-headline { font-weight:600; margin-bottom:6px; color:#0B2A4A; }
-    .empty-chat-card { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px; height:340px; color:#6B7280; }
+    .analysis-meta { font-size:12px; color:#1F2937; margin-bottom:6px; }
+    .analysis-headline { font-weight:600; margin-bottom:6px; color:#031B4D; }
+    .empty-chat-card { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px; height:340px; color:var(--text-secondary); }
     div[data-anchor="chat-end"] { display:none; }
-    .risk-gauge-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:12px; margin:12px 0; }
-    .risk-gauge-card { background:#fff; border:1px solid var(--border); border-radius:12px; padding:14px; box-shadow:0 4px 14px rgba(15,31,56,0.08); }
-    .risk-gauge-track { position:relative; height:8px; border-radius:999px; overflow:hidden; background:#f3f4f6; margin:8px 0 4px; }
+    .risk-gauge-grid { display:flex; justify-content:center; margin:10px 0 18px; }
+    .risk-gauge-card { width:260px; background:#fff; border:1px solid var(--border); border-radius:16px; padding:12px 16px; box-shadow:0 8px 24px rgba(15,23,42,0.12); }
+    .risk-gauge-track { position:relative; height:6px; border-radius:999px; overflow:hidden; background:#E2E8F0; margin:10px 0 6px; }
     .risk-gauge-track span { position:absolute; inset:0; }
-    .risk-gauge-needle { position:absolute; top:-4px; width:3px; height:16px; background:#0B2A4A; border-radius:999px; }
+    .risk-gauge-needle { position:absolute; top:-3px; width:3px; height:12px; background:#0B2A4A; border-radius:999px; }
+    .stMarkdown, .stMarkdown p, .stText, .stCaption, .stRadio label, .stCheckbox label, .stSelectbox label, .stMultiSelect label {
+        color:var(--text-primary) !important;
+    }
+    .stCaption, .stMarkdown caption {
+        color:#1E293B !important;
+    }
+    .stMultiSelect div[data-baseweb="tag"] {
+        background:var(--chip-selected-bg) !important;
+        color:#FFFFFF !important;
+        border:1px solid var(--chip-selected-border) !important;
+        border-radius:999px !important;
+        font-weight:600;
+        letter-spacing:0.01em;
+    }
+    .stMultiSelect div[data-baseweb="tag"]:focus-within {
+        box-shadow:0 0 0 2px var(--chip-focus) !important;
+    }
+    .stMultiSelect div[data-baseweb="tag"] svg {
+        fill:#FFFFFF !important;
+    }
+    .stMultiSelect [data-baseweb="menu"] li[aria-selected="true"] {
+        background:rgba(11,42,74,0.18) !important;
+        color:#0B2A4A !important;
+    }
+    .stMultiSelect [data-baseweb="menu"] li:hover {
+        background:rgba(11,42,74,0.12) !important;
+        color:#0B2A4A !important;
+    }
+    .stRadio div[role="radiogroup"] label {
+        color:var(--text-primary) !important;
+    }
+    .stRadio div[role="radiogroup"] label[data-baseweb="radio"]:has(input:checked) {
+        color:#B42318 !important;
+        font-weight:600;
+    }
+    .stSelectbox [data-baseweb="select"] > div {
+        color:var(--text-primary);
+    }
+    .stButton button, .stDownloadButton button {
+        color:var(--text-primary);
+        border:1px solid var(--border-strong);
+    }
+    .tariff-ctx table {
+        border:1px solid #0F172A;
+        border-radius:10px;
+        overflow:hidden;
+        box-shadow:0 6px 18px rgba(15,23,42,0.18);
+    }
+    .tariff-ctx th {
+        background:#E2E8F0;
+        color:#050914;
+        border-bottom:2px solid #0F172A;
+    }
+    .tariff-ctx td {
+        color:#050914;
+        border-bottom:1px solid #94A3B8;
+    }
+    .tariff-ctx tbody tr:nth-child(even) {
+        background:#F4F6FB;
+    }
+    div[data-testid="stDataFrame"] {
+        border-radius:12px;
+        border:1px solid #0F172A;
+        box-shadow:0 12px 32px rgba(15,23,42,0.16);
+        padding:8px;
+        background:#fff;
+    }
+    div[data-testid="stDataFrame"] table {
+        color:#050914;
+    }
+    div[data-testid="stDataFrame"] thead th {
+        background:#E3E8F2;
+        color:#050914;
+        border-bottom:2px solid #0F172A;
+        text-transform:uppercase;
+        font-size:11px;
+        letter-spacing:0.04em;
+    }
+    div[data-testid="stDataFrame"] tbody td {
+        border-bottom:1px solid #94A3B8;
+    }
+    div[data-testid="stDataFrame"] tbody tr:nth-child(even) {
+        background:#F5F6FA;
+    }
+    div[data-testid="stDataFrame"] tbody tr:hover td {
+        background:#E8ECF8;
+    }
+    </style>
     </style>
     """
 
@@ -108,6 +234,30 @@ def render_sidebar(on_clear) -> None:
                 color:#4F8FB8;
                 margin-right:6px;
             }
+            [data-testid="stSidebar"] button {
+                background:rgba(255,255,255,0.08);
+                color:#F9FAFB;
+                border:1px solid rgba(255,255,255,0.25);
+                border-radius:999px;
+                font-weight:600;
+                letter-spacing:0.02em;
+                box-shadow:0 4px 12px rgba(0,0,0,0.25);
+            }
+            [data-testid="stSidebar"] button:hover {
+                background:rgba(255,255,255,0.18);
+            }
+    [data-testid="stSidebar"] button:focus-visible {
+        outline:3px solid rgba(255,255,255,0.4);
+    }
+    [data-testid="collapsedControl"] button {
+        background:rgba(15,35,66,0.92) !important;
+        border:1px solid rgba(255,255,255,0.25) !important;
+        color:#F8FAFC !important;
+        box-shadow:0 6px 18px rgba(0,0,0,0.35) !important;
+    }
+    [data-testid="collapsedControl"] button:hover {
+        background:rgba(11,42,74,1) !important;
+    }
             </style>
             """,
             unsafe_allow_html=True,
@@ -125,9 +275,9 @@ def render_sidebar(on_clear) -> None:
             unsafe_allow_html=True,
         )
         st.markdown(
-            "<div style='margin:12px 0;background:rgba(240,165,0,0.15);"
-            "border-left:3px solid #f0a500;border-radius:6px;padding:8px 12px;"
-            "font-size:11px;color:#fde68a;'>"
+            "<div style='margin:12px 0;background:#FFF7D6;"
+            "border-left:3px solid #EAAA08;border-radius:6px;padding:8px 12px;"
+            "font-size:11px;color:#1B1F32;'>"
             "<b>Disclaimer:</b> Informational only — not legal advice.</div>",
             unsafe_allow_html=True,
         )
@@ -141,7 +291,7 @@ def render_sidebar(on_clear) -> None:
                 )
         else:
             st.markdown(
-                "<div style='font-size:11px;color:rgba(255,255,255,0.35);padding:4px 8px;'>No sessions yet</div>",
+                "<div style='font-size:11px;color:#0F2342;font-weight:600;padding:4px 12px;border-radius:999px;background:#F2F4F7;border:1px solid #CBD2D9;display:inline-flex;align-items:center;'>No sessions yet</div>",
                 unsafe_allow_html=True,
             )
         st.markdown("<hr>", unsafe_allow_html=True)
@@ -156,12 +306,12 @@ def render_sidebar(on_clear) -> None:
 def render_context_panel(
     *,
     country_options: list[str],
-    picker_options: dict[str, dict],
+    product_options: list[str],
+    code_map: dict[str, str],
     max_country: int,
     max_products: int,
     country_trimmed: bool,
     specific_trimmed: bool,
-    category_trimmed: bool,
     analysis_running: bool,
     on_clear_chat: Callable[[], None],
     logger,
@@ -169,7 +319,7 @@ def render_context_panel(
     context_bar = st.container()
     selected_products: list[str] = []
     with context_bar:
-        st.markdown('<div data-context="true"></div>', unsafe_allow_html=True)
+        st.markdown('<div class="layout-zone layout-zone--inputs" data-context="true">', unsafe_allow_html=True)
         sel_cols = st.columns(2, gap="large")
         with sel_cols[0]:
             st.markdown("<p style='font-size:12px;font-weight:600;color:#0B2A4A;margin-bottom:4px;'>Countries</p>", unsafe_allow_html=True)
@@ -182,58 +332,25 @@ def render_context_panel(
                 help="Choose up to three countries to compare governance risk.",
             )
         with sel_cols[1]:
-            st.markdown("<p style='font-size:12px;font-weight:600;color:#0B2A4A;margin-bottom:4px;'>HTS Products</p>", unsafe_allow_html=True)
-            mode = st.radio(
-                "Product granularity",
-                options=("specific", "categories"),
-                format_func=lambda opt: "Specific (10-digit)" if opt == "specific" else "Categories (8-digit)",
-                horizontal=True,
-                key="product_mode",
-                label_visibility="collapsed",
-            )
-            # Clear the inactive mode's selections on toggle so stale picks
-            # don't silently reappear or mix across modes.
-            if mode == "categories":
-                st.session_state.pop("selected_products_display_specific", None)
-            else:
-                st.session_state.pop("selected_products_display_categories", None)
-            mode_options = picker_options.get(mode, {}).get("options") or []
-            mode_key = f"selected_products_display_{mode}"
-            mode_help = (
-                "Pick exact 10-digit HTS items to analyze."
-                if mode == "specific"
-                else "Pick broader 8-digit categories; each selection expands to all of its specific HTS codes."
-            )
-            if mode_options:
+            st.markdown("<p style='font-size:12px;font-weight:600;color:#0B2A4A;margin-bottom:4px;'>HTS Products (8- & 10-digit)</p>", unsafe_allow_html=True)
+            if product_options:
                 st.multiselect(
                     "HTS Products",
-                    options=mode_options,
-                    key=mode_key,
+                    options=product_options,
+                    key="selected_products_display_specific",
                     max_selections=max_products,
                     label_visibility="collapsed",
-                    help=mode_help,
+                    help="Pick HTS codes by exact 10-digit line or 8-digit category.",
                 )
             else:
                 st.error("No HTS products found — rebuild the SQLite database.")
 
         selected_countries = st.session_state.get("selected_countries", [])
-        selected_specific_labels = st.session_state.get("selected_products_display_specific", [])
-        selected_category_labels = st.session_state.get("selected_products_display_categories", [])
-
-        # Only treat selections from the active mode as inputs to the analysis.
-        # This prevents default 10-digit picks from being silently combined with
-        # or overriding 8-digit category selections.
-        if mode == "specific":
-            active_specific_labels = selected_specific_labels
-            active_category_labels = []
-        else:
-            active_specific_labels = []
-            active_category_labels = selected_category_labels
+        selected_labels = st.session_state.get("selected_products_display_specific", [])
 
         st.caption(
             f"{len(selected_countries)} / {max_country} countries · "
-            f"{len(active_specific_labels)} specific selections · "
-            f"{len(active_category_labels)} categories"
+            f"{len(selected_labels)} HTS selections"
         )
         if country_trimmed:
             st.warning(f"Country selection limited to {max_country}. Extra choices were dropped.")
@@ -241,19 +358,10 @@ def render_context_panel(
         if specific_trimmed:
             st.warning(f"Specific selections limited to {max_products}. Extra choices were dropped.")
             logger.info("Trimmed specific selection to limit", extra={"limit": max_products})
-        if category_trimmed:
-            st.warning(f"Category selections limited to {max_products}. Extra choices were dropped.")
-            logger.info("Trimmed category selection to limit", extra={"limit": max_products})
 
         action_cols = st.columns([1, 1], gap="large")
-        specific_code_map = picker_options.get("specific", {}).get("code_map", {})
-        category_code_map = picker_options.get("categories", {}).get("code_map", {})
-
-        selected_specific_codes = [
-            specific_code_map[label] for label in active_specific_labels if label in specific_code_map
-        ]
-        selected_category_codes = [
-            category_code_map[label] for label in active_category_labels if label in category_code_map
+        selected_codes = [
+            code_map[label] for label in selected_labels if label in code_map
         ]
 
         expanded_codes: list[str] = []
@@ -264,12 +372,8 @@ def render_context_panel(
                 expanded_codes.append(value)
                 seen_codes.add(value)
 
-        if mode == "specific":
-            for code in selected_specific_codes:
-                _append_unique(code)
-        else:
-            for code in selected_category_codes:
-                _append_unique(code)
+        for code in selected_codes:
+            _append_unique(code)
 
         final_trimmed = False
         if len(expanded_codes) > max_products:
@@ -279,7 +383,7 @@ def render_context_panel(
         if final_trimmed:
             st.warning(
                 f"Using the first {max_products} codes due to the selection limit. "
-                "Trim your categories or switch to specific mode to refine."
+                "Reduce your picks to refine the analysis."
             )
             logger.info(
                 "Trimmed expanded specific selections to limit",
@@ -288,13 +392,6 @@ def render_context_panel(
 
         st.session_state["selected_product_codes"] = expanded_codes
         selected_products = expanded_codes
-
-        summary_lines = [
-            f"Mode: {'Categories (8-digit)' if st.session_state.get('product_mode') == 'categories' else 'Specific (10-digit)'}",
-            f"Specific selections: {len(selected_specific_codes)} · Categories: {len(selected_category_codes)}",
-            f"Expanded codes: {len(seen_codes)} (using {len(expanded_codes)})",
-        ]
-        st.caption(" · ".join(summary_lines))
 
         analyse_disabled = analysis_running or not selected_countries or not expanded_codes
         with action_cols[0]:
@@ -308,18 +405,24 @@ def render_context_panel(
                 on_clear_chat()
         if analysis_running:
             st.caption("Running analysis…")
+        st.markdown("</div>", unsafe_allow_html=True)
     return selected_products, analyse_clicked
 
 
-def render_chat_composer(placeholder: str) -> str | None:
+def render_chat_composer(
+    placeholder: str,
+    *,
+    pre_html: str | None = None,
+    post_html: str | None = None,
+) -> str | None:
     composer = st.container()
     with composer:
-        st.markdown('<div data-composer="true"></div>', unsafe_allow_html=True)
+        st.markdown('<div class="layout-zone layout-zone--composer" data-composer="true">', unsafe_allow_html=True)
         st.markdown(
             """
             <style>
             [data-testid="stChatInputContainer"] {
-                background:#FFFFFF !important;
+                background:#F8FAFC !important;
                 border:2px solid #CBD5E1 !important;
                 border-radius:32px !important;
                 padding:6px 10px 6px 20px !important;
@@ -335,14 +438,35 @@ def render_chat_composer(placeholder: str) -> str | None:
                 background:transparent !important;
             }
             [data-testid="stChatInputContainer"] textarea::placeholder {
-                color:#9CA3AF !important;
+                color:#6B7280 !important;
                 opacity:1 !important;
+            }
+            [data-testid="stChatInputContainer"] button {
+                background:var(--accent) !important;
+                color:#ffffff !important;
+                border:none !important;
+                border-radius:999px !important;
+                padding:0 18px !important;
+                font-weight:600 !important;
+                box-shadow:0 6px 18px rgba(11,42,74,0.3) !important;
+            }
+            [data-testid="stChatInputContainer"] button:hover {
+                background:#0E3A6A !important;
+            }
+            [data-testid="stChatInputContainer"] button:focus-visible {
+                outline:3px solid rgba(14,58,106,0.45) !important;
             }
             </style>
             """,
             unsafe_allow_html=True,
         )
-        return st.chat_input(placeholder, key="chat_input")
+        if pre_html:
+            st.markdown(pre_html, unsafe_allow_html=True)
+        value = st.chat_input(placeholder, key="chat_input")
+        if post_html:
+            st.markdown(post_html, unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+        return value
 
 
 def _render_risk_gauges(risk_snapshot: list[dict]) -> None:
@@ -371,8 +495,8 @@ def _render_risk_gauges(risk_snapshot: list[dict]) -> None:
             f"""
             <div class='risk-gauge-card'>
                 <div style='display:flex;justify-content:space-between;align-items:center;'>
-                    <span style='font-size:13px;font-weight:600;color:#0B2A4A;'>{snap.get('country','—')}</span>
-                    <span style='font-size:10.5px;font-weight:500;padding:2px 9px;border-radius:999px;background:{badge_bg};color:{badge_color};'>{level}</span>
+                    <span style='font-size:12px;font-weight:600;color:#031B4D;'>{snap.get('country','—')}</span>
+                    <span style='font-size:10px;font-weight:600;padding:2px 8px;border-radius:999px;background:{badge_bg};color:{badge_color};text-transform:uppercase;'>{level}</span>
                 </div>
                 <div class='risk-gauge-track'>
                     <span style='left:0;width:33%;background:#1D9E75;'></span>
@@ -380,12 +504,12 @@ def _render_risk_gauges(risk_snapshot: list[dict]) -> None:
                     <span style='left:67%;width:33%;background:#D85A30;'></span>
                     <div class='risk-gauge-needle' style='left:{_needle(score)}%;'></div>
                 </div>
-                <div style='display:flex;justify-content:space-between;font-size:9.5px;color:#9CA3AF;margin-top:4px;'>
+                <div style='display:flex;justify-content:space-between;font-size:9px;color:#64748B;margin-top:2px;text-transform:uppercase;letter-spacing:0.04em;'>
                     <span>Low</span><span>Medium</span><span>High</span>
                 </div>
-                <div style='margin-top:10px;'>
-                    <span style='font-family:monospace;font-size:26px;font-weight:500;color:#0B2A4A;'>{score}</span>
-                    <span style='font-size:12px;color:#9CA3AF;margin-left:3px;'>/ 100</span>
+                <div style='margin-top:8px;display:flex;align-items:flex-end;gap:6px;'>
+                    <span style='font-family:monospace;font-size:20px;font-weight:600;color:#0B2A4A;'>{score}</span>
+                    <span style='font-size:11px;color:#6B7280;'>/ 100</span>
                 </div>
             </div>
             """
@@ -396,27 +520,17 @@ def _render_risk_gauges(risk_snapshot: list[dict]) -> None:
     )
 
 
-def render_chat_feed(messages: list[dict], latest_result: dict | None):
+def render_chat_feed(
+    messages: list[dict],
+    latest_result: dict | None,
+    *,
+    code_lookup: dict[str, str] | None = None,
+    chart_mode: str = "ad_valorem",
+    render_chart: Callable[[pd.DataFrame, str], go.Figure | None] | None = None,
+):
     chat_feed = st.container()
     with chat_feed:
-        st.markdown('<div data-chat="true"></div>', unsafe_allow_html=True)
-        if len(messages) == 0:
-            st.markdown(
-                """
-                <div class='empty-chat-card'>
-                  <div style='width:56px;height:56px;border-radius:14px;border:2px solid #D1D5DB;display:flex;align-items:center;justify-content:center;'>
-                    <svg width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\" xmlns=\"http://www.w3.org/2000/svg\">
-                      <path d=\"M21 15C21 15.5304 20.7893 16.0391 20.4142 16.4142C20.0391 16.7893 19.5304 17 19 17H7L3 21V5C3 4.46957 3.21071 3.96086 3.58579 3.58579C3.96086 3.21071 4.46957 3 5 3H19C19.5304 3 20.0391 3.21071 20.4142 3.58579C20.7893 3.96086 21 4.46957 21 5V15Z\" stroke=\"#9CA3AF\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>
-                    </svg>
-                  </div>
-                  <div style='text-align:center;'>
-                    <p style='font-size:15px;font-weight:600;color:#374151;margin:0 0 6px;'>Select countries and HTS products, then click <span style="color:#0B2A4A;">Analyze</span> to begin.</p>
-                    <p style='font-size:13px;color:#9CA3AF;margin:0;'>Or type a question in the composer below.</p>
-                  </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+        st.markdown('<div class="layout-zone layout-zone--chat" data-chat="true">', unsafe_allow_html=True)
         for msg in messages:
             timestamp = msg.get('time', '')
             if msg.get('role') == 'user':
@@ -433,16 +547,46 @@ def render_chat_feed(messages: list[dict], latest_result: dict | None):
                 if selections.get('countries'):
                     selection_text.append('Countries: ' + ', '.join(selections['countries']))
                 if selections.get('products'):
-                    selection_text.append('Products: ' + ', '.join(selections['products']))
+                    readable = []
+                    for raw_code in selections['products']:
+                        if code_lookup:
+                            display = code_lookup.get(raw_code)
+                        else:
+                            display = None
+                        if display:
+                            readable.append(display.split(' — ', 1)[-1])
+                        else:
+                            readable.append(raw_code)
+                    selection_text.append('Products: ' + ', '.join(readable))
                 if selection_text:
                     st.markdown(
                         f"<div class='analysis-meta'>{' · '.join(selection_text)}</div>",
                         unsafe_allow_html=True,
                     )
                 fig_payload = msg.get('plotly_fig')
-                if fig_payload:
+                raw_data = msg.get('raw_chart_data')
+                raw_cols = msg.get('raw_chart_columns')
+                fig = None
+                if render_chart and raw_data and raw_cols:
+                    try:
+                        chart_df = pd.DataFrame(raw_data, columns=raw_cols)
+                        fig = render_chart(chart_df, chart_mode)
+                    except Exception:
+                        fig = None
+                if fig is None and fig_payload:
                     fig = go.Figure(fig_payload)
+                if fig:
                     st.plotly_chart(fig, width="stretch")
+                    if render_chart and raw_data and raw_cols:
+                        if chart_mode == "ad_valorem":
+                            st.caption(
+                                "Orange ring = effective rate modified by a Chapter 99 surcharge or trade program override."
+                            )
+                        else:
+                            st.caption(
+                                "Y axis shows the specific duty amount from the HTS table. "
+                                "Ch.99 percentage surcharges are not applied in this view."
+                            )
                 body_html = msg['content']
                 headline = msg.get('headline')
                 if headline:
@@ -516,4 +660,5 @@ def render_chat_feed(messages: list[dict], latest_result: dict | None):
         """,
         height=0,
     )
+    st.markdown("</div>", unsafe_allow_html=True)
     return analysis_stream_placeholder
