@@ -629,9 +629,38 @@ def render_correlation_chart(df: pd.DataFrame) -> go.Figure | None:
         yaxis_title="General Duty Rate (% ad valorem)",
         legend_title="Country / HTS Code",
         template="plotly_white",
-        margin=dict(l=10, r=10, t=40, b=10),
+        margin=dict(l=20, r=20, t=50, b=20),
+        paper_bgcolor="white",
+        plot_bgcolor="#F8FAFC",
+        font=dict(family="Inter, sans-serif", size=12, color="#374151"),
+        xaxis=dict(
+            gridcolor="#E2E8F0",
+            linecolor="#CBD5E1",
+            tickfont=dict(size=11, color="#6B7280"),
+            title_font=dict(size=12, color="#374151", family="Inter, sans-serif"),
+            zeroline=False,
+        ),
+        yaxis=dict(
+            gridcolor="#E2E8F0",
+            linecolor="#CBD5E1",
+            tickfont=dict(size=11, color="#6B7280"),
+            title_font=dict(size=12, color="#374151", family="Inter, sans-serif"),
+            zeroline=False,
+        ),
+        legend=dict(
+            bgcolor="white",
+            bordercolor="#E2E8F0",
+            borderwidth=1,
+            font=dict(size=11, color="#374151"),
+            title_font=dict(size=11, color="#0B2A4A"),
+        ),
+        hoverlabel=dict(
+            bgcolor="white",
+            bordercolor="#E2E8F0",
+            font=dict(size=12, color="#0B2A4A", family="Inter, sans-serif"),
+        ),
     )
-    fig.update_traces(marker={"size": 12, "line": {"width": 1, "color": "rgba(0,0,0,0.3)"}})
+    fig.update_traces(marker=dict(size=14, line=dict(width=1.5, color="white"), opacity=0.9))
     return fig
 
 
@@ -833,7 +862,7 @@ def main() -> None:
     st.markdown(_format_css(), unsafe_allow_html=True)
     st.markdown("""<style>
 [data-testid="stBottom"] > div {
-    background: #0B2A4A !important;
+    background: transparent !important;
     padding: 16px 24px !important;
     border-top: none !important;
 }
@@ -857,6 +886,10 @@ def main() -> None:
     color: #9CA3AF !important;
     opacity: 1 !important;
 }
+/* Tab styling */
+button[data-baseweb="tab"] { font-size:13px !important; font-weight:500 !important; color:#94A3B8 !important; padding:8px 16px !important; background:transparent !important; }
+button[data-baseweb="tab"]:hover { color:#0B2A4A !important; }
+button[data-baseweb="tab"][aria-selected="true"] { font-weight:700 !important; color:#0B2A4A !important; border-bottom:2px solid #0B2A4A !important; }
 </style>""", unsafe_allow_html=True)
     st.markdown("""
 <style>
@@ -962,7 +995,7 @@ div
 
 
         st.markdown("<div style='background:rgba(240,165,0,0.12);border-left:3px solid #f0a500;border-radius:6px;padding:8px 12px;font-size:11px;color:#fde68a;margin:8px 0;'><b>Disclaimer:</b> This tool is for informational purposes only and does not constitute legal advice.</div>", unsafe_allow_html=True)
-        st.markdown("<p style='font-size:9.5px;font-weight:600;text-transform:uppercase;letter-spacing:0.09em;color:rgba(255,255,255,0.35);margin-bottom:6px;'>Recent sessions</p>", unsafe_allow_html=True)
+        st.markdown("<p style='font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:0.12em;color:rgba(255,255,255,0.45);margin-bottom:8px;'>Recent Sessions</p>", unsafe_allow_html=True)
         if 'session_history' not in st.session_state:
             st.session_state['session_history'] = []
         if st.session_state['session_history']:
@@ -972,9 +1005,9 @@ div
             st.markdown("<div style='font-size:11px;color:rgba(255,255,255,0.25);padding:4px 8px;'>No sessions yet</div>", unsafe_allow_html=True)
 
         st.markdown("<hr>", unsafe_allow_html=True)
-        st.markdown("<p style='font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:0.1em;color:rgba(255,255,255,0.35);margin-bottom:8px;'>Countries</p>", unsafe_allow_html=True)
+        st.markdown("<p style='font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:0.12em;color:rgba(255,255,255,0.45);margin-bottom:6px;margin-top:4px;'>Countries</p>", unsafe_allow_html=True)
         st.multiselect("Countries", options=country_options, key="selected_countries", max_selections=MAX_COUNTRY_SELECTION, label_visibility="hidden")
-        st.markdown("<p style='font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:0.1em;color:rgba(255,255,255,0.35);margin-top:12px;margin-bottom:8px;'>HTS Products</p>", unsafe_allow_html=True)
+        st.markdown("<p style='font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:0.12em;color:rgba(255,255,255,0.45);margin-top:14px;margin-bottom:6px;'>HTS Products</p>", unsafe_allow_html=True)
         if display_options:
             st.multiselect("HTS Products", options=display_options, key="selected_products_display", max_selections=MAX_PRODUCT_SELECTION, label_visibility="hidden")
         st.markdown("<hr>", unsafe_allow_html=True)
@@ -1066,7 +1099,13 @@ div
 
 </style>
 """, unsafe_allow_html=True)
-        prompt = st.chat_input(QUESTION_PLACEHOLDER, key="chat_input")
+        # Handle chip-triggered questions
+    chip_question = st.session_state.pop("chip_question", None)
+
+    prompt = st.chat_input(QUESTION_PLACEHOLDER, key="chat_input")
+
+    if prompt is None and chip_question:
+        prompt = chip_question.strip()
 
     if prompt is not None:
         question = prompt.strip()
@@ -1094,6 +1133,7 @@ div
             append_message(
                 {"role": "assistant", "content": assistant_text, "time": datetime.now().strftime("%I:%M %p")}
             )
+        st.rerun()
 
     with chat_feed:
         st.markdown('<div data-chat="true"></div>', unsafe_allow_html=True)
@@ -1137,62 +1177,157 @@ div
                         unsafe_allow_html=True,
                     )
                 fig_payload = msg.get("plotly_fig")
-                if fig_payload:
-                    fig = go.Figure(fig_payload)
-                    st.plotly_chart(fig, width="stretch")
-                st.markdown(
-                    f"<div class='bubble-bot'>{msg['content']}</div><div class='timestamp'>{timestamp}</div><div class='clearfix'></div>",
-                    unsafe_allow_html=True,
-                )
-                duty_exclusions = msg.get("duty_exclusions") or []
-                exclusion_text = msg.get("duty_exclusion_message")
-                if exclusion_text:
-                    st.warning(exclusion_text)
-                elif duty_exclusions:
-                    listed = ", ".join(
-                        f"{item.get('hts_code')} ({item.get('general_duty_rate_text')})"
-                        for item in duty_exclusions[:3]
-                    )
-                    if len(duty_exclusions) > 3:
-                        listed += f", +{len(duty_exclusions) - 3} more"
-                    st.warning(f"Skipped non-percentage duty rates: {listed}")
                 risk_snapshot = msg.get("risk_snapshot") or []
-                if risk_snapshot:
+                chart_data = msg.get("chart_data")
+
+                # Quick summary card
+                if risk_snapshot and chart_data:
+                    scores = [s['score'] for s in risk_snapshot]
+                    avg_score = sum(scores) / len(scores)
+                    chart_df_summary = pd.DataFrame(chart_data, columns=msg.get("chart_columns"))
+                    lowest_duty_row = chart_df_summary.loc[chart_df_summary['ad_valorem_rate'].idxmin()] if not chart_df_summary.empty else None
+                    if avg_score >= 50:
+                        risk_label = "⚠ High avg risk"
+                        risk_color = "#C0392B"
+                        risk_bg = "#FADBD8"
+                    elif avg_score >= 30:
+                        risk_label = "◑ Moderate avg risk"
+                        risk_color = "#D68910"
+                        risk_bg = "#FDEBD0"
+                    else:
+                        risk_label = "✓ Low avg risk"
+                        risk_color = "#1E8449"
+                        risk_bg = "#D5F5E3"
+                    best_country = lowest_duty_row['country'] if lowest_duty_row is not None else "N/A"
+                    best_rate = f"{lowest_duty_row['ad_valorem_rate']:.1f}%" if lowest_duty_row is not None else "N/A"
+                    st.markdown(f"""
+                    <div style='display:flex;gap:10px;margin-bottom:14px;align-items:stretch;'>
+                        <div style='flex:1;background:{risk_bg};border-radius:12px;padding:12px 16px;border:1px solid {risk_color}22;'>
+                            <div style='font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:{risk_color};margin-bottom:4px;'>Overall Risk</div>
+                            <div style='font-size:13px;font-weight:600;color:{risk_color};'>{risk_label}</div>
+                            <div style='font-size:11px;color:#64748B;margin-top:2px;'>Avg score: {avg_score:.1f} / 100</div>
+                        </div>
+                        <div style='flex:1;background:#EFF6FF;border-radius:12px;padding:12px 16px;border:1px solid #3B82F622;'>
+                            <div style='font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#1D4ED8;margin-bottom:4px;'>Lowest Duty</div>
+                            <div style='font-size:13px;font-weight:600;color:#1D4ED8;'>⭑ {best_country}</div>
+                            <div style='font-size:11px;color:#64748B;margin-top:2px;'>Rate: {best_rate}</div>
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                has_tabs = fig_payload or risk_snapshot or chart_data
+                if has_tabs:
+                    tab_labels = []
+                    if risk_snapshot: tab_labels.append("◎ Risk Score")
+                    if fig_payload: tab_labels.append("∿ Graph")
+                    if chart_data: tab_labels.append("≡ Data")
+                    tab_labels.append("◈ Analysis")
+                    tabs = st.tabs(tab_labels)
+                    tab_idx = 0
+                    if risk_snapshot:
+                        with tabs[tab_idx]:
+                            tab_idx += 1
                     def render_gauge(s):
                         score = round(s['score'], 1)
                         level = s['level']
                         country = s['country']
                         needle_pct = min(score, 99)
-                        score_color = '#D85A30' if level == 'High' else '#BA7517' if level in ('Medium','Moderate') else '#1D9E75'
-                        badge_bg = '#FCEBEB' if level == 'High' else '#FAEEDA' if level in ('Medium','Moderate') else '#EAF3DE'
-                        badge_color = '#791F1F' if level == 'High' else '#633806' if level in ('Medium','Moderate') else '#27500A'
+                        score_color = '#C0392B' if level == 'High' else '#D68910' if level in ('Medium','Moderate') else '#1E8449'
+                        badge_bg = '#FADBD8' if level == 'High' else '#FDEBD0' if level in ('Medium','Moderate') else '#D5F5E3'
+                        badge_color = '#922B21' if level == 'High' else '#7D6608' if level in ('Medium','Moderate') else '#1E8449'
+                        bar_color = score_color
                         return (
-                            f"<div style='background:#fff;border:0.5px solid #E5E7EB;border-radius:10px;padding:12px 14px;margin-bottom:10px;'>"
-                            f"<div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;'>"
-                            f"<span style='font-size:13px;font-weight:600;color:#0B2A4A;'>{country}</span>"
-                            f"<span style='font-size:10.5px;font-weight:500;padding:2px 9px;border-radius:100px;background:{badge_bg};color:{badge_color};'>{level}</span>"
+                            f"<div style='background:#FFFFFF;border:1px solid #E2E8F0;border-radius:16px;padding:20px 22px;box-shadow:0 2px 8px rgba(11,42,74,0.06);'>"
+                            f"<div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;'>"
+                            f"<span style='font-size:14px;font-weight:700;color:#0B2A4A;letter-spacing:-0.01em;'>{country}</span>"
+                            f"<span style='font-size:10px;font-weight:600;padding:3px 10px;border-radius:20px;background:{badge_bg};color:{badge_color};letter-spacing:0.04em;text-transform:uppercase;'>{level}</span>"
                             f"</div>"
-                            f"<div style='height:7px;background:#ffffff;border-radius:100px;position:relative;border:0.5px solid #E5E7EB;'>"
-                            f"<div style='position:absolute;left:0;top:0;height:100%;width:33%;background:#1D9E75;border-radius:100px 0 0 100px;'></div>"
-                            f"<div style='position:absolute;left:33%;top:0;height:100%;width:34%;background:#BA7517;'></div>"
-                            f"<div style='position:absolute;left:67%;top:0;height:100%;width:33%;background:#D85A30;border-radius:0 100px 100px 0;'></div>"
-                            f"<div style='position:absolute;top:-4px;left:{needle_pct}%;width:3px;height:15px;background:#0B2A4A;border-radius:2px;transform:translateX(-50%);'></div>"
+                            f"<div style='height:6px;background:#F1F5F9;border-radius:100px;position:relative;margin-bottom:6px;'>"
+                            f"<div style='position:absolute;left:0;top:0;height:100%;width:{needle_pct}%;background:linear-gradient(90deg,#1E8449,{bar_color});border-radius:100px;transition:width 0.4s ease;'></div>"
+                            f"<div style='position:absolute;top:-5px;left:{needle_pct}%;width:2px;height:16px;background:#0B2A4A;border-radius:2px;transform:translateX(-50%);box-shadow:0 0 0 2px #fff;'></div>"
                             f"</div>"
-                            f"<div style='display:flex;justify-content:space-between;font-size:9.5px;color:#9CA3AF;margin-top:4px;'><span>Low</span><span>Medium</span><span>High</span></div>"
-                            f"<div style='margin-top:10px;'>"
-                            f"<span style='font-family:monospace;font-size:26px;font-weight:500;color:{score_color};'>{score}</span>"
-                            f"<span style='font-size:12px;color:#9CA3AF;margin-left:3px;'>/ 100</span>"
+                            f"<div style='display:flex;justify-content:space-between;font-size:9px;color:#94A3B8;letter-spacing:0.03em;margin-bottom:16px;'><span>LOW</span><span>MEDIUM</span><span>HIGH</span></div>"
+                            f"<div style='display:flex;align-items:baseline;gap:4px;'>"
+                            f"<span style='font-size:32px;font-weight:300;color:{score_color};letter-spacing:-0.02em;'>{score}</span>"
+                            f"<span style='font-size:13px;color:#CBD5E1;font-weight:400;'>/ 100</span>"
                             f"</div></div>"
                         )
                     gauges_html = ''.join(render_gauge(s) for s in risk_snapshot)
-                    st.markdown(f"<div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin:8px 0;'>{gauges_html}</div>", unsafe_allow_html=True)
-                chart_data = msg.get("chart_data")
-                if chart_data:
-                    chart_df = pd.DataFrame(
-                        chart_data,
-                        columns=msg.get("chart_columns"),
+                    gauges_div = f"<div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin:8px 0;'>{gauges_html}</div>"
+                    if has_tabs:
+                        with tabs[0]:
+                            st.markdown(gauges_div, unsafe_allow_html=True)
+                    else:
+                        st.markdown(gauges_div, unsafe_allow_html=True)
+                if has_tabs:
+                    graph_tab_idx = 1 if risk_snapshot else 0
+                    if fig_payload:
+                        with tabs[graph_tab_idx]:
+                            fig = go.Figure(fig_payload)
+                            st.plotly_chart(fig, width="stretch")
+                    data_tab_idx = graph_tab_idx + (1 if fig_payload else 0)
+                    chart_data = msg.get("chart_data")
+                    if chart_data:
+                        with tabs[data_tab_idx]:
+                            chart_df = pd.DataFrame(chart_data, columns=msg.get("chart_columns"))
+                            st.dataframe(chart_df)
+                    analysis_tab_idx = data_tab_idx + (1 if chart_data else 0)
+                    with tabs[analysis_tab_idx]:
+                        st.markdown(
+                            f"<div class='bubble-bot'>{msg['content']}</div><div class='timestamp'>{timestamp}</div><div class='clearfix'></div>",
+                            unsafe_allow_html=True,
+                        )
+                        duty_exclusions = msg.get("duty_exclusions") or []
+                        exclusion_text = msg.get("duty_exclusion_message")
+                        if exclusion_text:
+                            st.warning(exclusion_text)
+                        elif duty_exclusions:
+                            listed = ", ".join(
+                                f"{item.get('hts_code')} ({item.get('general_duty_rate_text')})"
+                                for item in duty_exclusions[:3]
+                            )
+                            if len(duty_exclusions) > 3:
+                                listed += f", +{len(duty_exclusions) - 3} more"
+                            st.warning(f"Skipped non-percentage duty rates: {listed}")
+                        # Follow-up prompt chips
+                        selections = msg.get("selections", {})
+                        countries = selections.get("countries", [])
+                        products = selections.get("products", [])
+                        chip_country = countries[0] if countries else "this country"
+                        chip_product = products[0] if products else "this product"
+                        suggestions = [
+                            f"Which country has the lowest duty for {chip_product}?",
+                            f"What is the risk score for {chip_country}?",
+                            f"Why do duty rates differ across countries?",
+                            f"What trade programs reduce tariffs for {chip_country}?",
+                        ]
+                        st.markdown("<div style='margin-top:14px;display:flex;flex-wrap:wrap;gap:8px;'>", unsafe_allow_html=True)
+                        for suggestion in suggestions:
+                            if st.button(suggestion, key=f"chip_{hash(suggestion)}_{timestamp}"):
+                                st.session_state.setdefault("messages", []).append({"role": "user", "content": suggestion, "time": timestamp})
+                                st.rerun()
+                        st.markdown("</div>", unsafe_allow_html=True)
+                else:
+                    chart_data = msg.get("chart_data")
+                    if chart_data:
+                        chart_df = pd.DataFrame(chart_data, columns=msg.get("chart_columns"))
+                        st.dataframe(chart_df)
+                    st.markdown(
+                        f"<div class='bubble-bot'>{msg['content']}</div><div class='timestamp'>{timestamp}</div><div class='clearfix'></div>",
+                        unsafe_allow_html=True,
                     )
-                    st.dataframe(chart_df)
+                    duty_exclusions = msg.get("duty_exclusions") or []
+                    exclusion_text = msg.get("duty_exclusion_message")
+                    if exclusion_text:
+                        st.warning(exclusion_text)
+                    elif duty_exclusions:
+                        listed = ", ".join(
+                            f"{item.get('hts_code')} ({item.get('general_duty_rate_text')})"
+                            for item in duty_exclusions[:3]
+                        )
+                        if len(duty_exclusions) > 3:
+                            listed += f", +{len(duty_exclusions) - 3} more"
+                        st.warning(f"Skipped non-percentage duty rates: {listed}")
                 continue
 
             st.markdown(
