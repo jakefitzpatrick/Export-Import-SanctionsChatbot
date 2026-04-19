@@ -16,49 +16,6 @@ import sys
 
 MAX_DISPLAY_ROWS = 1000
 
-# HTS codes whose 9903.41.10 Chapter 99 rows were rescinded effective April 2026.
-REMOVED_99034110_CODES = {
-    "6404.11.20",
-    "6404.11.41",
-    "6404.11.49",
-    "6404.11.51",
-    "6404.11.59",
-    "6404.11.61",
-    "6404.11.69",
-    "6404.11.71",
-    "6404.11.75",
-    "6404.11.79",
-    "6404.11.81",
-    "6404.11.85",
-    "6404.11.89",
-    "6404.11.90",
-    "6404.19.15",
-    "6404.19.20",
-    "6404.19.25",
-    "6404.19.30",
-    "6404.19.36",
-    "6404.19.37",
-    "6404.19.39",
-    "6404.19.42",
-    "6404.19.47",
-    "6404.19.49",
-    "6404.19.52",
-    "6404.19.57",
-    "6404.19.59",
-    "6404.19.61",
-    "6404.19.69",
-    "6404.19.72",
-    "6404.19.77",
-    "6404.19.79",
-    "6404.19.82",
-    "6404.19.87",
-    "6404.19.89",
-    "6404.19.90",
-    "6404.20.20",
-    "6404.20.40",
-    "6404.20.60",
-}
-
 # View that joins Master_HTS (Chapters 1-97) with Chapter 99 surcharges.
 #
 # Join logic:
@@ -237,19 +194,6 @@ def build_database(csv_path: Path, ch99_path: Path, db_path: Path) -> None:
             extra_indexes=["HTS_MASTER_CODE", "COUNTRY", "MATCH_PRIORITY"],
         )
         print(f"Loaded {n_ch99:,} rows into `chapter_99`.")
-
-        if REMOVED_99034110_CODES:
-            codes = sorted(REMOVED_99034110_CODES)
-            placeholders = ",".join("?" for _ in codes)
-            delete_sql = (
-                f"DELETE FROM chapter_99 "
-                f"WHERE NEWCODE = '9903.41.10' "
-                f"AND HTS_MASTER_CODE IN ({placeholders})"
-            )
-            cur.execute(delete_sql, tuple(codes))
-            removed_rows = cur.rowcount or 0
-            if removed_rows:
-                print(f"Pruned {removed_rows} rescinded 9903.41.10 rows.")
 
         cur.execute("DROP VIEW IF EXISTS hts_with_ch99")
         cur.execute(CREATE_VIEW_SQL)
