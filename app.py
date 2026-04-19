@@ -1,358 +1,72 @@
-from __future__ import annotations
-# ImportInsight AI
-import json
+"""Streamlit text-to-SQL chatbot backed by a local HTS SQLite database."""
 import logging
 import os
-import re
 import sqlite3
 import uuid
-from dataclasses import dataclass
 from datetime import datetime
-import itertools
 from pathlib import Path
 
+import numpy as np
 from dotenv import load_dotenv
 import openai
 import pandas as pd
-import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
-import streamlit.components.v1 as components
 
 from risk_model import get_risk_df
+from session import (
+    MAX_COUNTRY_SELECTION,
+    MAX_PRODUCT_OPTIONS,
+    MAX_PRODUCT_SELECTION,
+    DEFAULT_COUNTRY_SELECTION,
+    enforce_selection_limit,
+    reset_app_state,
+)
+from utils import LAST_RESULT_KEY
+from chat import (
+    append_message,
+    answer_question,
+    QUESTION_PLACEHOLDER,
+)
+from analysis import (
+    queue_analysis_request,
+    maybe_run_analysis,
+    render_correlation_chart,
+)
+from logger import setup_logger
+from app_ui import (
+    get_css,
+    render_sidebar,
+    render_context_panel,
+    render_chat_feed,
+    render_chat_composer,
+)
 
 load_dotenv()
 
-logger = logging.getLogger(__name__)
+logger = setup_logger(__name__)
 
 HTS_DB_PATH = Path(__file__).resolve().parent / "data" / "hts.db"
-HTS_COLUMNS = [
-    "hts_code",
-    "chapter",
-    "heading",
-    "subheading",
-    "statistical_suffix",
-    "indent_level",
-    "description",
-    "full_description",
-    "unit",
-    "general_duty_rate",
-    "special_duty_rate",
-    "column2_duty_rate",
-    "quota_quantity",
-    "additional_duties",
-]
-
-MAX_PRODUCT_OPTIONS = 1000
-DEFAULT_COUNTRY_SELECTION = [
-    "Cameroon",
-    "Russia",
-]
-SUMMARY_SAMPLE_LIMIT = 60
-MAX_COUNTRY_SELECTION = 3
-MAX_PRODUCT_SELECTION = 3
-
-GENERAL_DUTY_PATTERN = re.compile(r"-?\d+(?:\.\d+)?")
-
-QUESTION_PLACEHOLDER = "Ask about tariffs, compliance, or trade regulations..."
-
-FREE_DUTY_VALUES = {"free", "", "n/a", "none", "no", "zero"}
-SPECIFIC_HINTS = [
-    " per ",
-    "/",
-    " each",
-    " doz",
-    " dozen",
-    " kg",
-    " lb",
-    " liter",
-    " litres",
-    " pair",
-    " kg.",
-    " kg)",
-    "units",
-    "unit",
-]
-CURRENCY_HINTS = ["$", "¢"]
 
 
-@dataclass
-class DutyRate:
-    raw_text: str
-    kind: str
-    ad_valorem_rate: float | None = None
-    specific_amount: float | None = None
-    specific_unit: str | None = None
-    notes: str | None = None
+def _handle_sidebar_clear() -> None:
+    """Reset chat selections via sidebar action."""
+    reset_app_state()
+    logger.info("Chat cleared from sidebar button")
+    st.rerun()
 
 
-SQL_SYSTEM_PROMPT = (
-    "You are a SQL generator for a SQLite database containing a single table named `hts`. "
-    "The available text columns in `hts` are: "
-    + ", ".join(HTS_COLUMNS)
-    + ". Always respond with exactly one valid SQLite SELECT statement. "
-    "Do not include surrounding markdown, explanations, or additional text. "
-    "The SQL will be executed as-is against the HTS database, so refer only to the columns listed above and avoid modifications (INSERT/UPDATE/DELETE/PRAGMA)."
-)
-
-SELECT_PATTERN = re.compile(r"SELECT\b.*", re.IGNORECASE | re.DOTALL)
-
-LAST_RESULT_KEY = "latest_hts_result"
-
-
-def _format_css() -> str:
-    return """
-    <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
-    :root {
-        --primary:#0f1f38;
-        --muted:#94a3b8;
-        --border:#e2e8f0;
-        --card:#ffffff;
-    }
-    html, body, [class*="css"] { font-family: 'Inter', sans-serif; background:#ffffff; }
-    section.main { background: #ffffff; }
-    .block-container { background: #ffffff; }
-    section.main > div.block-container {
-        display:flex;
-        flex-direction:column;
-        min-height:100vh;
-        height:100vh;
-        overflow:hidden;
-        gap:1rem;
-        padding-bottom:0 !important;
-    }
-    div[data-context="true"],
-    div[data-chat="true"],
-    div[data-composer="true"],
-    div[data-anchor="chat-end"] {
-        display:none;
-    }
-    div[data-testid="stVerticalBlock"]:has(> div[data-context="true"]) {
-        position:sticky;
-        top:0;
-        z-index:50;
-        background:var(--card);
-        border:1px solid var(--border);
-        border-radius:18px;
-        padding:16px 20px 6px;
-        box-shadow:0 12px 24px rgba(15,31,56,0.08);
-    }
-    div[data-testid="stVerticalBlock"]:has(> div[data-chat="true"]) {
-        flex:1;
-        overflow-y:auto;
-        padding-right:6px;
-        padding-bottom:120px;
-        scroll-behavior:smooth;
-    }
-    div[data-testid="stVerticalBlock"]:has(> div[data-composer="true"]) {
-        position:sticky;
-        bottom:0;
-        z-index:40;
-        background:var(--card);
-        border-top:1px solid var(--border);
-        border-radius:18px 18px 0 0;
-        padding:12px 20px;
-        box-shadow:0 -10px 25px rgba(15,31,56,0.08);
-    }
-    .bubble-user {
-        transition: transform 0.15s ease, box-shadow 0.15s ease;
-    }
-    .bubble-user:hover {
-        transform: translateY(-2px) scale(1.01);
-        box-shadow: 0 6px 20px rgba(26,58,92,0.25);
-    }
-    .bubble-bot-wrap:hover .bubble-bot {
-        transform: translateY(-2px) scale(1.01);
-        box-shadow: 0 6px 20px rgba(0,0,0,0.08);
-    }
-    .bubble-user {
-    /* country pills */
-    span[style*="background:#0B2A4A"] {
-        transition: transform 0.15s ease, box-shadow 0.15s ease, background 0.15s ease !important;
-        cursor: default;
-        box-shadow: 0 2px 6px rgba(11,42,74,0.3);
-    }
-    span[style*="background:#0B2A4A"]:hover {
-        transform: translateY(-2px) scale(1.05) !important;
-        box-shadow: 0 6px 16px rgba(11,42,74,0.4) !important;
-        background: #1a3a5c !important;
-    }
-    /* hts pills */
-    span[style*="background:#4F6D7A"] {
-        transition: transform 0.15s ease, box-shadow 0.15s ease !important;
-        box-shadow: 0 2px 6px rgba(79,109,122,0.3);
-    }
-    span[style*="background:#4F6D7A"]:hover {
-        transform: translateY(-2px) scale(1.05) !important;
-        box-shadow: 0 6px 16px rgba(79,109,122,0.4) !important;
-    }
-    /* analyse button */
-    .stButton > button {
-        transition: transform 0.15s ease, box-shadow 0.15s ease, background 0.15s ease !important;
-        box-shadow: 0 4px 14px rgba(26,58,92,0.3) !important;
-    }
-    .stButton > button:hover {
-        transform: translateY(-2px) !important;
-        box-shadow: 0 8px 24px rgba(26,58,92,0.4) !important;
-        background-color: #2a5298 !important;
-    }
-    .stButton > button:active {
-        transform: translateY(0px) scale(0.98) !important;
-        box-shadow: 0 2px 8px rgba(26,58,92,0.2) !important;
-    }
-    /* risk gauge cards */
-    div[style*="border-radius:10px;padding:12px"] {
-        transition: transform 0.15s ease, box-shadow 0.15s ease !important;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.06) !important;
-    }
-    div[style*="border-radius:10px;padding:12px"]:hover {
-        transform: translateY(-3px) !important;
-        box-shadow: 0 8px 24px rgba(0,0,0,0.1) !important;
-    }
-    /* sidebar multiselect tags */
-    [data-testid="stSidebar"] [data-baseweb="tag"] {
-        transition: transform 0.15s ease, box-shadow 0.15s ease !important;
-        box-shadow: 0 2px 6px rgba(0,0,0,0.2) !important;
-    }
-    [data-testid="stSidebar"] [data-baseweb="tag"]:hover {
-        transform: translateY(-2px) scale(1.03) !important;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.3) !important;
-    }
-    /* recent session items */
-    div[style*="rgba(255,255,255,0.05)"] {
-        transition: background 0.15s ease, transform 0.15s ease !important;
-        cursor: pointer;
-    }
-    div[style*="rgba(255,255,255,0.05)"]:hover {
-        background: rgba(255,255,255,0.1) !important;
-        transform: translateX(3px) !important;
-    }
-
-        background-color: #1a3a5c;
-        color: white;
-        padding: 12px 18px;
-        border-radius: 18px 18px 4px 18px;
-        margin: 4px 0;
-        max-width: 70%;
-        float: right;
-        clear: both;
-        font-size: 14px;
-        line-height: 1.5;
-    }
-    .bubble-bot {
-        background-color: #ffffff;
-        color: #1a1a2e;
-        padding: 12px 18px;
-        border-radius: 18px 18px 18px 4px;
-        margin: 4px 0;
-        max-width: 70%;
-        float: left;
-        clear: both;
-        font-size: 14px;
-        line-height: 1.5;
-        border: 1px solid #e2e8f0;
-        box-shadow: 0 1px 4px rgba(0,0,0,0.06);
-    }
-    .bubble-label {
-        font-size: 10px;
-        color: #94a3b8;
-        margin-bottom: 2px;
-        clear: both;
-        font-weight: 500;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-    }
-    .bubble-label-right { text-align: right; }
-    .timestamp {
-        font-size: 10px;
-        color: #cbd5e1;
-        margin-top: 3px;
-        clear: both;
-    }
-    .timestamp-right { text-align: right; }
-    .clearfix { clear: both; }
-    img { mix-blend-mode: multiply; }
-    [data-testid="stSidebar"] img {
-        display: block;
-        margin-left: 0 !important;
-        padding-left: 0 !important;
-        mix-blend-mode: normal !important;
-        filter: brightness(0) invert(1);
-    }
-    .stButton > button {
-        background-color: #ffffff !important;
-        color: #0B2A4A !important;
-        border-radius: 28px !important;
-        font-weight: 500 !important;
-        border: 1.5px solid #D1D5DB !important;
-        padding: 10px !important;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.08) !important;
-        transition: all 0.15s ease !important;
-    }
-    .stButton > button:hover {
-        background-color: #0B2A4A !important;
-        color: white !important;
-        border-color: #0B2A4A !important;
-        box-shadow: 0 4px 16px rgba(11,42,74,0.2) !important;
-        transform: translateY(-1px) !important;
-    }
-    .stButton > button:hover { background-color: #2a5298; }
-    [data-testid="stHorizontalBlock"] .stButton > button {
-        background-color: transparent !important;
-        color: #94a3b8 !important;
-        border: 1px solid #e2e8f0 !important;
-        border-radius: 20px !important;
-        font-size: 12px !important;
-        font-weight: 400 !important;
-        padding: 4px 10px !important;
-        opacity: 0.8;
-    }
-    [data-testid="stHorizontalBlock"] .stButton > button:hover {
-        background-color: #f0f4ff !important;
-        color: #1a3a5c !important;
-        opacity: 1;
-    }
-    .risk-pills {
-        display:flex;
-        flex-wrap:wrap;
-        gap:8px;
-        margin:8px 0 4px;
-    }
-    .risk-pill {
-        border:1px solid var(--border);
-        border-left:4px solid var(--border);
-        padding:8px 12px;
-        border-radius:12px;
-        background:#f9fafc;
-        font-size:12px;
-        font-weight:500;
-    }
-    .risk-pill strong {
-        display:block;
-        font-size:12px;
-        color:var(--primary);
-    }
-    .analysis-meta {
-        font-size:12px;
-        color:var(--muted);
-        margin-bottom:6px;
-    }
-    .empty-chat {
-        color:var(--muted);
-        font-size:13px;
-        text-align:center;
-        padding:40px 0;
-    }
-    /* force chat input visibility */
-    
-    
-    
-    
-    
-    
-    </style>
-    """
+def _handle_clear_inputs() -> None:
+    """Clear only country/product selections while leaving chat history intact."""
+    st.session_state["selected_countries"] = []
+    st.session_state["selected_products_display_specific"] = []
+    st.session_state["selected_product_codes"] = []
+    st.session_state["correlation_signature"] = None
+    st.session_state["analysis_request"] = None
+    st.session_state["analysis_active_run"] = None
+    st.session_state["analysis_inflight"] = False
+    logger.info("Cleared country/product selections from main panel button")
+    st.rerun()
 
 
 @st.cache_resource
@@ -363,508 +77,306 @@ def get_db_connection(db_path: str) -> sqlite3.Connection:
 
 
 @st.cache_data(show_spinner=False)
-def load_product_options(_conn: sqlite3.Connection) -> list[tuple[str, str]]:
+def load_product_options(_conn: sqlite3.Connection) -> list[dict[str, str]]:
     query = (
-        'SELECT hts_code, description FROM hts '
+        'SELECT hts_code, description, full_description FROM hts '
         'WHERE hts_code IS NOT NULL AND hts_code <> "" '
         'ORDER BY hts_code LIMIT ?'
     )
+    logger.info("Loading product options from SQLite", extra={"limit": MAX_PRODUCT_OPTIONS})
     try:
         df = pd.read_sql_query(query, _conn, params=(MAX_PRODUCT_OPTIONS,))
     except Exception as exc:
         logger.warning("Failed to load product options: %s", exc)
         return []
-    return list(df.itertuples(index=False, name=None))
+    logger.info("Loaded %s product descriptions into the picker", len(df))
+    return df.to_dict("records")
 
 
-def _extract_first_number(value: str) -> tuple[float | None, re.Match | None]:
-    match = GENERAL_DUTY_PATTERN.search(value)
-    if not match:
-        return None, None
-    try:
-        return float(match.group(0)), match
-    except ValueError:
-        return None, match
+# ---------------------------------------------------------------------------
+# Trade-flow map
+# ---------------------------------------------------------------------------
+
+# Country name (as used in the app/HTS data) → (ISO-3 code, latitude, longitude)
+# Includes all names from the risk-model dropdown AND the Ch99 database.
+# Aliases (same ISO, different name) are intentional — choropleth deduplicates by ISO.
+COUNTRY_GEO: dict[str, tuple[str, float, float]] = {
+    "Afghanistan": ("AFG", 33.9, 67.7), "Albania": ("ALB", 41.2, 20.2),
+    "Algeria": ("DZA", 28.0, 1.7), "Andorra": ("AND", 42.5, 1.5),
+    "Angola": ("AGO", -11.2, 17.9), "Antigua and Barbuda": ("ATG", 17.1, -61.8),
+    "Argentina": ("ARG", -38.4, -63.6), "Armenia": ("ARM", 40.1, 45.0),
+    "Australia": ("AUS", -25.0, 133.0), "Austria": ("AUT", 47.5, 14.6),
+    "Azerbaijan": ("AZE", 40.1, 47.6), "Bahamas": ("BHS", 25.0, -77.3),
+    "Bahrain": ("BHR", 26.0, 50.6), "Bangladesh": ("BGD", 24.0, 90.0),
+    "Barbados": ("BRB", 13.2, -59.6), "Belarus": ("BLR", 53.7, 28.0),
+    "Belgium": ("BEL", 50.8, 4.5), "Belize": ("BLZ", 17.2, -88.5),
+    "Benin": ("BEN", 9.3, 2.3), "Bhutan": ("BTN", 27.5, 90.4),
+    "Bolivia": ("BOL", -16.3, -64.5), "Bosnia and Herzegovina": ("BIH", 44.2, 17.8),
+    "Botswana": ("BWA", -22.3, 24.7), "Brazil": ("BRA", -14.2, -51.9),
+    "Brunei": ("BRN", 4.5, 114.7), "Bulgaria": ("BGR", 42.7, 25.5),
+    "Burkina Faso": ("BFA", 12.4, -1.6),
+    "Burma": ("MMR", 17.1, 96.0),                  # Ch99 spelling
+    "Burma/Myanmar": ("MMR", 17.1, 96.0),           # risk-model spelling
+    "Myanmar": ("MMR", 17.1, 96.0),                 # alternate spelling
+    "Burundi": ("BDI", -3.4, 30.0), "Cambodia": ("KHM", 12.6, 104.9),
+    "Cameroon": ("CMR", 5.7, 12.4), "Canada": ("CAN", 60.0, -96.0),
+    "Cape Verde": ("CPV", 15.1, -23.6), "Central African Republic": ("CAF", 6.6, 20.9),
+    "Chad": ("TCD", 15.5, 18.7), "Chile": ("CHL", -35.7, -71.5),
+    "China": ("CHN", 35.9, 104.2), "Colombia": ("COL", 4.1, -72.3),
+    "Comoros": ("COM", -11.6, 43.3), "Costa Rica": ("CRI", 9.7, -83.8),
+    "Cote d'Ivoire": ("CIV", 7.5, -5.5),            # Ch99 spelling
+    "Ivory Coast": ("CIV", 7.5, -5.5),              # risk-model spelling
+    "Croatia": ("HRV", 45.1, 15.2),
+    "Cyprus": ("CYP", 35.1, 33.4), "Czech Republic": ("CZE", 49.8, 15.5),
+    "DR Congo": ("COD", -4.0, 21.8),                # Ch99 spelling
+    "Democratic Republic of the Congo": ("COD", -4.0, 21.8),  # risk-model spelling
+    "Republic of the Congo": ("COG", -0.2, 15.8),   # risk-model (different country)
+    "Denmark": ("DNK", 56.3, 9.5), "Djibouti": ("DJI", 11.8, 42.6),
+    "Dominica": ("DMA", 15.4, -61.4), "Dominican Republic": ("DOM", 18.7, -70.2),
+    "Ecuador": ("ECU", -1.8, -78.2), "Egypt": ("EGY", 26.8, 30.8),
+    "El Salvador": ("SLV", 13.8, -88.9), "Equatorial Guinea": ("GNQ", 1.7, 10.3),
+    "Eritrea": ("ERI", 15.2, 39.8), "Estonia": ("EST", 58.6, 25.0),
+    "Ethiopia": ("ETH", 9.1, 40.5), "Falkland Islands": ("FLK", -51.8, -59.5),
+    "Fiji": ("FJI", -17.7, 178.1), "Finland": ("FIN", 64.0, 26.0),
+    "France": ("FRA", 46.2, 2.2), "Gabon": ("GAB", -0.8, 11.6),
+    "Gambia": ("GMB", 13.4, -15.3),                 # Ch99 spelling
+    "The Gambia": ("GMB", 13.4, -15.3),             # risk-model spelling
+    "Georgia": ("GEO", 42.3, 43.4), "Germany": ("DEU", 51.2, 10.5),
+    "Ghana": ("GHA", 7.9, -1.0), "Greece": ("GRC", 39.1, 21.8),
+    "Grenada": ("GRD", 12.1, -61.7), "Guatemala": ("GTM", 15.8, -90.2),
+    "Guinea": ("GIN", 11.0, -10.9), "Guinea-Bissau": ("GNB", 11.8, -15.2),
+    "Guyana": ("GUY", 4.9, -58.9), "Haiti": ("HTI", 19.0, -72.3),
+    "Honduras": ("HND", 15.2, -86.2), "Hong Kong": ("HKG", 22.3, 114.2),
+    "Hungary": ("HUN", 47.2, 19.5), "Iceland": ("ISL", 64.9, -18.7),
+    "India": ("IND", 20.6, 79.0), "Indonesia": ("IDN", -0.8, 113.9),
+    "Iran": ("IRN", 32.4, 53.7), "Iraq": ("IRQ", 33.2, 43.7),
+    "Ireland": ("IRL", 53.4, -8.2), "Israel": ("ISR", 31.0, 35.0),
+    "Italy": ("ITA", 41.9, 12.6), "Jamaica": ("JAM", 18.1, -77.3),
+    "Japan": ("JPN", 36.2, 138.3), "Jordan": ("JOR", 30.6, 36.2),
+    "Kazakhstan": ("KAZ", 48.0, 67.3), "Kenya": ("KEN", -0.1, 37.9),
+    "Kiribati": ("KIR", -3.4, -168.7), "Kosovo": ("XKX", 42.6, 20.9),
+    "Kuwait": ("KWT", 29.3, 47.5), "Kyrgyzstan": ("KGZ", 41.2, 74.8),
+    "Laos": ("LAO", 19.9, 102.5), "Latvia": ("LVA", 56.9, 24.6),
+    "Lebanon": ("LBN", 33.9, 35.9), "Lesotho": ("LSO", -29.6, 28.2),
+    "Liberia": ("LBR", 6.4, -9.4), "Libya": ("LBY", 26.3, 17.2),
+    "Liechtenstein": ("LIE", 47.2, 9.5), "Lithuania": ("LTU", 55.2, 24.0),
+    "Luxembourg": ("LUX", 49.8, 6.1), "Macau": ("MAC", 22.2, 113.5),
+    "Macedonia": ("MKD", 41.6, 21.7), "North Macedonia": ("MKD", 41.6, 21.7),
+    "Madagascar": ("MDG", -18.8, 46.9), "Malawi": ("MWI", -13.3, 34.3),
+    "Malaysia": ("MYS", 4.2, 108.0), "Maldives": ("MDV", 3.2, 73.2),
+    "Mali": ("MLI", 17.6, -4.0), "Malta": ("MLT", 35.9, 14.4),
+    "Marshall Islands": ("MHL", 7.1, 171.2), "Mauritania": ("MRT", 21.0, -10.9),
+    "Mauritius": ("MUS", -20.3, 57.6), "Mexico": ("MEX", 23.6, -102.6),
+    "Micronesia": ("FSM", 7.4, 150.6), "Moldova": ("MDA", 47.4, 28.4),
+    "Monaco": ("MCO", 43.7, 7.4), "Mongolia": ("MNG", 46.9, 103.8),
+    "Montenegro": ("MNE", 42.7, 19.4), "Morocco": ("MAR", 31.8, -7.1),
+    "Mozambique": ("MOZ", -18.7, 35.5), "Namibia": ("NAM", -22.9, 18.5),
+    "Nauru": ("NRU", -0.5, 166.9), "Nepal": ("NPL", 28.4, 84.1),
+    "Netherlands": ("NLD", 52.1, 5.3), "New Zealand": ("NZL", -40.9, 174.9),
+    "Nicaragua": ("NIC", 12.9, -85.2), "Niger": ("NER", 17.6, 8.1),
+    "Nigeria": ("NGA", 9.1, 8.7), "North Korea": ("PRK", 40.3, 127.5),
+    "Norway": ("NOR", 60.5, 8.5), "Oman": ("OMN", 21.5, 55.9),
+    "Pakistan": ("PAK", 30.4, 69.3), "Palau": ("PLW", 7.5, 134.6),
+    "Palestine/West Bank": ("PSE", 31.9, 35.2), "Panama": ("PAN", 8.4, -80.1),
+    "Papua New Guinea": ("PNG", -6.3, 143.9), "Paraguay": ("PRY", -23.4, -58.4),
+    "Peru": ("PER", -9.2, -75.0), "Philippines": ("PHL", 12.9, 121.8),
+    "Poland": ("POL", 51.9, 19.1), "Portugal": ("PRT", 39.4, -8.2),
+    "Qatar": ("QAT", 25.4, 51.2), "Romania": ("ROU", 45.9, 24.9),
+    "Russia": ("RUS", 61.5, 105.3), "Rwanda": ("RWA", -1.9, 29.9),
+    "Saint Kitts and Nevis": ("KNA", 17.4, -62.8), "Saint Lucia": ("LCA", 13.9, -60.9),
+    "Saint Vincent and the Grenadines": ("VCT", 13.3, -61.2),
+    "Samoa": ("WSM", -13.8, -172.1), "San Marino": ("SMR", 43.9, 12.5),
+    "Sao Tome and Principe": ("STP", 0.2, 6.6), "Saudi Arabia": ("SAU", 24.0, 45.0),
+    "Senegal": ("SEN", 14.5, -14.5), "Serbia": ("SRB", 44.0, 21.0),
+    "Seychelles": ("SYC", -4.7, 55.5), "Sierra Leone": ("SLE", 8.5, -11.8),
+    "Singapore": ("SGP", 1.4, 103.8), "Slovakia": ("SVK", 48.7, 19.7),
+    "Slovenia": ("SVN", 46.2, 15.0), "Solomon Islands": ("SLB", -9.6, 160.2),
+    "Somalia": ("SOM", 5.2, 46.2), "South Africa": ("ZAF", -30.6, 22.9),
+    "South Korea": ("KOR", 35.9, 127.8), "South Sudan": ("SSD", 6.9, 31.3),
+    "Spain": ("ESP", 40.5, -3.7), "Sri Lanka": ("LKA", 7.9, 80.8),
+    "Sudan": ("SDN", 12.9, 30.2), "Suriname": ("SUR", 3.9, -56.0),
+    "Swaziland": ("SWZ", -26.5, 31.5), "Sweden": ("SWE", 60.1, 18.6),
+    "Switzerland": ("CHE", 47.0, 8.2), "Syria": ("SYR", 34.8, 38.9),
+    "Taiwan": ("TWN", 23.7, 120.9), "Tanzania": ("TZA", -6.4, 34.9),
+    "Thailand": ("THA", 15.9, 100.9), "Timor-Leste": ("TLS", -8.9, 125.7),
+    "Togo": ("TGO", 8.6, 0.8), "Tonga": ("TON", -21.2, -175.2),
+    "Trinidad and Tobago": ("TTO", 10.7, -61.2), "Tunisia": ("TUN", 33.9, 9.6),
+    "Turkey": ("TUR", 38.6, 35.2),                  # Ch99 spelling
+    "Türkiye": ("TUR", 38.6, 35.2),                 # risk-model spelling
+    "Tuvalu": ("TUV", -8.5, 179.2), "Uganda": ("UGA", 1.4, 32.3),
+    "Ukraine": ("UKR", 48.4, 31.2), "United Arab Emirates": ("ARE", 23.4, 53.8),
+    "United Kingdom": ("GBR", 55.4, -3.4),
+    "United States": ("USA", 39.5, -98.4),           # Ch99 spelling
+    "United States of America": ("USA", 39.5, -98.4),  # risk-model spelling
+    "Uruguay": ("URY", -32.5, -55.8), "Uzbekistan": ("UZB", 41.4, 64.6),
+    "Vanuatu": ("VUT", -15.4, 166.9), "Venezuela": ("VEN", 6.4, -66.6),
+    "Vietnam": ("VNM", 14.1, 108.3), "Yemen": ("YEM", 15.6, 48.5),
+    "Zambia": ("ZMB", -13.1, 27.9), "Zimbabwe": ("ZWE", -20.0, 30.0),
+}
+
+_USA_LAT, _USA_LON = 39.5, -98.4
 
 
-def _has_specific_hint(value: str) -> bool:
-    lowered = value.lower()
-    return any(hint in lowered for hint in SPECIFIC_HINTS) or any(symbol in value for symbol in CURRENCY_HINTS)
+def _slerp_arc(
+    lat1: float, lon1: float, lat2: float, lon2: float, n: int = 80
+) -> tuple[list[float], list[float]]:
+    """Return (lats, lons) for a great-circle arc from point 1 to point 2."""
+    r = np.radians
+    def to_xyz(la, lo):
+        return np.array([np.cos(r(la)) * np.cos(r(lo)),
+                         np.cos(r(la)) * np.sin(r(lo)),
+                         np.sin(r(la))])
+    v1, v2 = to_xyz(lat1, lon1), to_xyz(lat2, lon2)
+    omega = np.arccos(float(np.clip(np.dot(v1, v2), -1.0, 1.0)))
+    lats, lons = [], []
+    for t in np.linspace(0.0, 1.0, n):
+        if omega < 1e-10:
+            v = v1
+        else:
+            v = (np.sin((1 - t) * omega) * v1 + np.sin(t * omega) * v2) / np.sin(omega)
+        lats.append(float(np.degrees(np.arcsin(np.clip(v[2], -1.0, 1.0)))))
+        lons.append(float(np.degrees(np.arctan2(v[1], v[0]))))
+    return lats, lons
 
 
-def parse_general_duty(value: str | float | int | None) -> DutyRate:
-    if value is None:
-        return DutyRate(raw_text="", kind="text", notes="missing duty")
-    if isinstance(value, (int, float)):
-        return DutyRate(raw_text=str(value), kind="ad_valorem", ad_valorem_rate=float(value))
+@st.cache_data(ttl=60)
+def render_trade_map(selected_countries: tuple[str, ...]) -> go.Figure:
+    """Choropleth with animated comet-trail arcs flowing from selected countries to USA."""
+    N_FRAMES = 50
+    N_ARC = 80
+    TAIL = 10  # comet tail length in points
 
-    raw_text = str(value).strip()
-    normalized = raw_text.lower()
-    if normalized in FREE_DUTY_VALUES:
-        return DutyRate(raw_text=raw_text, kind="ad_valorem", ad_valorem_rate=0.0, notes="duty-free entry")
+    sel_set = set(selected_countries)
+    _USA_ISO = "USA"
 
-    has_percent = "%" in raw_text
-    has_specific = _has_specific_hint(raw_text)
+    iso_z: dict[str, int] = {}
+    for name, (iso, _la, _lo) in COUNTRY_GEO.items():
+        if iso == _USA_ISO:
+            z = 2
+        elif name in sel_set:
+            z = 1
+        else:
+            z = 0
+        iso_z[iso] = max(iso_z.get(iso, 0), z)
 
-    number, match = _extract_first_number(raw_text)
-    if has_percent and not has_specific and number is not None:
-        return DutyRate(raw_text=raw_text, kind="ad_valorem", ad_valorem_rate=number)
+    iso_list = list(iso_z.keys())
+    z_list = list(iso_z.values())
 
-    if has_percent and has_specific:
-        return DutyRate(
-            raw_text=raw_text,
-            kind="text",
-            notes="contains mixed ad valorem and specific components",
-        )
+    arcs: dict[str, tuple[list[float], list[float]]] = {}
+    for country in selected_countries:
+        geo = COUNTRY_GEO.get(country)
+        if geo and geo[0] != _USA_ISO:
+            arcs[country] = _slerp_arc(geo[1], geo[2], _USA_LAT, _USA_LON, N_ARC)
 
-    if has_specific and number is not None:
-        unit_fragment = raw_text.replace(match.group(0), "", 1).strip() if match else raw_text
-        unit_fragment = unit_fragment or None
-        return DutyRate(
-            raw_text=raw_text,
-            kind="specific",
-            specific_amount=number,
-            specific_unit=unit_fragment,
-        )
+    arc_list = list(arcs.items())
 
-    if number is not None and has_percent:
-        return DutyRate(raw_text=raw_text, kind="ad_valorem", ad_valorem_rate=number)
+    fig = go.Figure()
 
-    if number is not None and not has_percent and not has_specific:
-        return DutyRate(
-            raw_text=raw_text,
-            kind="text",
-            notes="numeric value without context",
-        )
+    fig.add_trace(go.Choropleth(
+        locations=iso_list,
+        z=z_list,
+        locationmode="ISO-3",
+        colorscale=[
+            [0.0, "#1e2030"],
+            [0.5, "#e8733a"],
+            [1.0, "#2b7de9"],
+        ],
+        zmin=0, zmax=2,
+        showscale=False,
+        marker_line_width=0.4,
+        marker_line_color="#3a3d52",
+        hovertemplate="%{location}<extra></extra>",
+    ))
 
-    return DutyRate(raw_text=raw_text, kind="text", notes="unparsable duty text")
+    for _country, (lats, lons) in arc_list:
+        fig.add_trace(go.Scattergeo(
+            lat=lats, lon=lons,
+            mode="lines",
+            line=dict(width=1.2, color="rgba(255,255,255,0.18)", dash="dot"),
+            hoverinfo="skip", showlegend=False,
+        ))
 
+    dot_trace_indices = []
+    for _country, (lats, lons) in arc_list:
+        dot_trace_indices.append(len(fig.data))
+        fig.add_trace(go.Scattergeo(
+            lat=[lats[0]], lon=[lons[0]],
+            mode="markers",
+            marker=dict(size=8, color="#ffcc44", opacity=1.0),
+            hoverinfo="skip", showlegend=False,
+        ))
 
-def compute_selection_signature(countries: list[str], products: list[str]) -> tuple[tuple[str, ...], tuple[str, ...]] | None:
-    if not countries or not products:
-        return None
-    return (tuple(countries), tuple(products))
+    fig.add_trace(go.Scattergeo(
+        lat=[_USA_LAT], lon=[_USA_LON],
+        mode="markers",
+        marker=dict(size=14, color="#2b7de9", symbol="star",
+                    line=dict(width=1.5, color="white")),
+        hoverinfo="skip", showlegend=False,
+    ))
 
+    frames = []
+    for f in range(N_FRAMES):
+        t = f / N_FRAMES
+        head_idx = int(t * (N_ARC - 1))
+        frame_data = []
+        for _country, (lats, lons) in arc_list:
+            tail_start = max(0, head_idx - TAIL + 1)
+            t_lats = lats[tail_start: head_idx + 1]
+            t_lons = lons[tail_start: head_idx + 1]
+            n_tail = len(t_lats)
+            sizes = [3 + 7 * (i / max(n_tail - 1, 1)) for i in range(n_tail)]
+            alphas = [0.15 + 0.85 * (i / max(n_tail - 1, 1)) for i in range(n_tail)]
+            colors = [f"rgba(255,204,68,{a:.2f})" for a in alphas]
+            frame_data.append(go.Scattergeo(
+                lat=t_lats, lon=t_lons,
+                mode="markers",
+                marker=dict(size=sizes, color=colors, symbol="circle"),
+                hoverinfo="skip",
+            ))
+        frames.append(go.Frame(data=frame_data, traces=dot_trace_indices))
 
-def enforce_selection_limit(key: str, max_items: int) -> tuple[list[str], bool]:
-    """Trim a list in session_state before widgets using the same key are rendered."""
-    selections = st.session_state.get(key, []) or []
-    if not isinstance(selections, list):
-        selections = list(selections)
-        st.session_state[key] = selections
-    trimmed = len(selections) > max_items
-    if trimmed:
-        st.session_state[key] = selections[:max_items]
-        selections = st.session_state[key]
-    return selections, trimmed
+    fig.frames = frames
 
-
-def build_sql_messages(question: str) -> list[dict]:
-    return [
-        {"role": "system", "content": SQL_SYSTEM_PROMPT},
-        {
-            "role": "user",
-            "content": (
-                f"Question: {question}\n"
-                "Return only one SELECT statement that answers the question."
-            ),
-        },
-    ]
-
-
-def extract_select_statement(text: str) -> str | None:
-    cleaned = text.replace("`", "").strip()
-    match = SELECT_PATTERN.search(cleaned)
-    if not match:
-        return None
-    stmt = match.group(0)
-    if ";" in stmt:
-        stmt = stmt.split(";")[0]
-    return stmt.strip()
-
-
-def translate_question_to_sql(question: str, deployment_id: str) -> str:
-    messages = build_sql_messages(question)
-    response = openai.chat.completions.create(
-        model=deployment_id,
-        messages=messages,
-        temperature=1,
+    play_menu = dict(
+        type="buttons", showactive=False,
+        x=1.05, y=0.5,
+        xanchor="left", yanchor="middle",
+        buttons=[dict(
+            label="▶",
+            method="animate",
+            args=[None, dict(
+                frame=dict(duration=45, redraw=False),
+                fromcurrent=False,
+                transition=dict(duration=0),
+                mode="immediate",
+            )],
+        )],
     )
-    raw_content = response.choices[0].message.content
-    sql = extract_select_statement(raw_content)
-    if not sql or not sql.strip().lower().startswith("select"):
-        raise ValueError("The model did not return a valid SELECT statement.")
-    return sql
 
-
-def execute_sql(conn: sqlite3.Connection, sql: str) -> pd.DataFrame:
-    normalized = sql.strip().lower()
-    if not normalized.startswith("select"):
-        raise ValueError("Only SELECT statements are allowed.")
-    return pd.read_sql_query(sql, conn)
-
-
-def fetch_tariffs_for_codes(
-    conn: sqlite3.Connection,
-    selected_codes: list[str],
-) -> pd.DataFrame:
-    if not selected_codes:
-        return pd.DataFrame()
-    placeholders = ",".join(["?"] * len(selected_codes))
-    query = (
-        "SELECT hts_code, description, general_duty_rate "
-        "FROM hts WHERE hts_code IN (" + placeholders + ")"
-    )
-    df = pd.read_sql_query(query, conn, params=selected_codes)
-    if df.empty:
-        return df
-    df = df.rename(columns={"general_duty_rate": "general_duty_rate_text"})
-    df["general_duty_rate_text"] = df["general_duty_rate_text"].fillna("").astype(str)
-    parsed_rates = df["general_duty_rate_text"].apply(parse_general_duty)
-    df["duty_kind"] = [rate.kind for rate in parsed_rates]
-    df["ad_valorem_rate"] = [rate.ad_valorem_rate for rate in parsed_rates]
-    df["specific_amount"] = [rate.specific_amount for rate in parsed_rates]
-    df["specific_unit"] = [rate.specific_unit for rate in parsed_rates]
-    df["duty_notes"] = [rate.notes for rate in parsed_rates]
-    return df
-
-
-def build_correlation_dataframe(
-    selected_countries: list[str],
-    tariff_df: pd.DataFrame,
-    risk_df: pd.DataFrame,
-) -> tuple[pd.DataFrame, list[dict]]:
-    if not selected_countries or tariff_df.empty:
-        return pd.DataFrame(), []
-
-    country_subset = risk_df[risk_df["country"].isin(selected_countries)].copy()
-    if country_subset.empty:
-        return pd.DataFrame(), []
-
-    valid_products = tariff_df[
-        (tariff_df["duty_kind"] == "ad_valorem") & tariff_df["ad_valorem_rate"].notna()
-    ].copy()
-    excluded_mask = ~(
-        (tariff_df["duty_kind"] == "ad_valorem") & tariff_df["ad_valorem_rate"].notna()
-    )
-    excluded_records = tariff_df.loc[excluded_mask, ["hts_code", "description", "general_duty_rate_text", "duty_kind"]]
-    exclusions = excluded_records.to_dict("records")
-
-    if valid_products.empty:
-        return pd.DataFrame(), exclusions
-
-    country_records = country_subset.to_dict("records")
-    product_records = valid_products.to_dict("records")
-    rows = []
-    for country_meta, product_meta in itertools.product(country_records, product_records):
-        rows.append(
-            {
-                "country": country_meta["country"],
-                "risk_score": country_meta["score"],
-                "risk_level": country_meta["level"],
-                "country_color": country_meta["color"],
-                "hts_code": product_meta["hts_code"],
-                "product_description": product_meta["description"],
-                "ad_valorem_rate": product_meta["ad_valorem_rate"],
-                "general_duty_rate_text": product_meta["general_duty_rate_text"],
-            }
-        )
-    return pd.DataFrame(rows), exclusions
-
-
-def build_risk_snapshot(risk_df: pd.DataFrame, selected_countries: list[str]) -> list[dict]:
-    if not selected_countries:
-        return []
-    subset = risk_df[risk_df["country"].isin(selected_countries)]
-    if subset.empty:
-        return []
-    return subset[["country", "score", "level", "color", "year"]].to_dict("records")
-
-
-def reset_app_state() -> None:
-    st.session_state.messages = []
-    st.session_state[LAST_RESULT_KEY] = None
-    # Remove widget-controlled keys so Streamlit can recreate them cleanly.
-    for widget_key in ["selected_countries", "selected_products_display"]:
-        st.session_state.pop(widget_key, None)
-    st.session_state["selected_product_codes"] = []
-    st.session_state["correlation_signature"] = None
-    st.session_state["analysis_active_run"] = None
-    st.session_state["analysis_inflight"] = False
-    st.session_state["analysis_request"] = None
-    st.session_state["chat_scroll_token"] = 0
-
-
-def append_message(message: dict) -> None:
-    st.session_state.messages.append(message)
-    st.session_state["chat_scroll_token"] = st.session_state.get("chat_scroll_token", 0) + 1
-
-
-def render_correlation_chart(df: pd.DataFrame) -> go.Figure | None:
-    if df.empty:
-        return None
-    fig = px.scatter(
-        df,
-        x="risk_score",
-        y="ad_valorem_rate",
-        color="country",
-        symbol="hts_code",
-        hover_data={
-            "country": True,
-            "risk_score": ":.1f",
-            "risk_level": True,
-            "hts_code": True,
-            "ad_valorem_rate": ":.2f",
-            "general_duty_rate_text": True,
-            "product_description": True,
-        },
-    )
     fig.update_layout(
-        xaxis_title="Country Risk Score",
-        yaxis_title="General Duty Rate (% ad valorem)",
-        legend_title="Country / HTS Code",
-        template="plotly_white",
-        margin=dict(l=10, r=10, t=40, b=10),
+        paper_bgcolor="#0f1117",
+        margin=dict(l=0, r=0, t=4, b=0),
+        height=260,
+        geo=dict(
+            bgcolor="#0f1117",
+            showland=True, landcolor="#1e2030",
+            showocean=True, oceancolor="#12141f",
+            showcoastlines=True, coastlinecolor="#2e3148",
+            showcountries=True, countrycolor="#2e3148",
+            showframe=False,
+            projection_type="natural earth",
+            lataxis_range=[-60, 85],
+        ),
+        updatemenus=[play_menu] if arc_list else [],
     )
-    fig.update_traces(marker={"size": 12, "line": {"width": 1, "color": "rgba(0,0,0,0.3)"}})
+
     return fig
-
-
-def stream_analysis_to_placeholder(
-    df: pd.DataFrame,
-    deployment_id: str,
-    placeholder: st.delta_generator.DeltaGenerator | None,
-) -> str:
-    subset = df.head(SUMMARY_SAMPLE_LIMIT)
-    stats = {
-        "count_pairs": len(df),
-        "countries": sorted(df["country"].unique().tolist()),
-        "hts_codes": sorted(df["hts_code"].unique().tolist()),
-        "risk_min": float(df["risk_score"].min()),
-        "risk_max": float(df["risk_score"].max()),
-        "duty_min": float(df["ad_valorem_rate"].min()),
-        "duty_max": float(df["ad_valorem_rate"].max()),
-    }
-    payload = {
-        "stats": stats,
-        "sample_rows": subset.to_dict("records"),
-    }
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "You are a trade compliance analyst. Explain correlations between country risk scores "
-                "and general duty rates in business language. Highlight extremes, clusters, and any anomalies."
-            ),
-        },
-        {
-            "role": "user",
-            "content": (
-                "Write a concise paragraph (<=140 words) summarizing these tariff-risk pairs "
-                "and give 1-2 actionable insights:\n"
-                f"{json.dumps(payload)}"
-            ),
-        },
-    ]
-    stream = openai.chat.completions.create(
-        model=deployment_id,
-        messages=messages,
-        temperature=1,
-        stream=True,
-    )
-    full_text = ""
-    for chunk in stream:
-        delta = chunk.choices[0].delta.content if chunk.choices and chunk.choices[0].delta else None
-        if not delta:
-            continue
-        full_text += delta
-        if placeholder:
-            placeholder.markdown(
-                f"<div class='bubble-bot'>{full_text}▌</div>",
-                unsafe_allow_html=True,
-            )
-    if placeholder:
-        placeholder.markdown(
-            f"<div class='bubble-bot'>{full_text}</div>",
-            unsafe_allow_html=True,
-        )
-    return full_text.strip()
-
-
-def queue_analysis_request(
-    selected_countries: list[str],
-    selected_products: list[str],
-) -> bool:
-    signature = compute_selection_signature(selected_countries, selected_products)
-    if not signature:
-        return False
-    st.session_state["analysis_request"] = {
-        "countries": list(selected_countries),
-        "products": list(selected_products),
-        "signature": signature,
-    }
-    return True
-
-
-def maybe_run_analysis(
-    conn: sqlite3.Connection,
-    deployment_id: str,
-    risk_df: pd.DataFrame,
-    placeholder: st.delta_generator.DeltaGenerator | None,
-) -> None:
-    request = st.session_state.get("analysis_request")
-    if not request or st.session_state.get("analysis_inflight"):
-        return
-
-    countries = request.get("countries", [])
-    products = request.get("products", [])
-    signature = request.get("signature")
-    if not countries or not products:
-        st.session_state["analysis_request"] = None
-        return
-
-    run_id = uuid.uuid4().hex
-    st.session_state["analysis_request"] = None
-    st.session_state["analysis_inflight"] = True
-    st.session_state["analysis_active_run"] = run_id
-    success = False
-
-    try:
-        with st.spinner("Running analysis..."):
-            tariff_df = fetch_tariffs_for_codes(conn, products)
-            corr_df, duty_exclusions = build_correlation_dataframe(countries, tariff_df, risk_df)
-            timestamp = datetime.now().strftime("%I:%M %p")
-            risk_snapshot = build_risk_snapshot(risk_df, countries)
-            exclusion_message = None
-            if duty_exclusions:
-                preview_labels = [
-                    f"{item['hts_code']} ({item['general_duty_rate_text']})"
-                    for item in duty_exclusions
-                ]
-                preview_limit = 3
-                preview = ", ".join(preview_labels[:preview_limit])
-                if len(preview_labels) > preview_limit:
-                    preview += f", +{len(preview_labels) - preview_limit} more"
-                exclusion_message = (
-                    f"Skipped {len(duty_exclusions)} product(s) with non-percentage duty rates: {preview}."
-                )
-                st.warning(exclusion_message)
-            if corr_df.empty:
-                if duty_exclusions and not tariff_df.empty:
-                    summary_text = (
-                        "All selected products use quantity- or rule-based duty rates, so no ad valorem analysis is available."
-                    )
-                else:
-                    summary_text = "No overlapping tariff-risk data for the current selections."
-                if placeholder:
-                    placeholder.markdown(
-                        f"<div class='bubble-bot'>{summary_text}</div>",
-                        unsafe_allow_html=True,
-                    )
-                append_message(
-                    {
-                        "role": "assistant",
-                        "content": summary_text,
-                        "time": timestamp,
-                        "type": "analysis",
-                        "chart_data": corr_df.to_dict("records") if not corr_df.empty else [],
-                        "chart_columns": corr_df.columns.tolist(),
-                        "risk_snapshot": risk_snapshot,
-                        "selections": {
-                            "countries": countries,
-                            "products": products,
-                        },
-                        "duty_exclusions": duty_exclusions,
-                        "duty_exclusion_message": exclusion_message,
-                    }
-                )
-            else:
-                fig = render_correlation_chart(corr_df)
-                summary_text = stream_analysis_to_placeholder(corr_df, deployment_id, placeholder)
-                append_message(
-                    {
-                        "role": "assistant",
-                        "content": summary_text,
-                        "time": timestamp,
-                        "type": "analysis",
-                        "plotly_fig": fig.to_dict() if fig else None,
-                        "chart_data": corr_df.to_dict("records"),
-                        "chart_columns": corr_df.columns.tolist(),
-                        "risk_snapshot": risk_snapshot,
-                        "selections": {
-                            "countries": countries,
-                            "products": products,
-                        },
-                        "duty_exclusions": duty_exclusions,
-                        "duty_exclusion_message": exclusion_message,
-                    }
-                )
-            st.session_state["correlation_signature"] = signature
-            if 'session_history' not in st.session_state:
-                st.session_state['session_history'] = []
-            country_str = ", ".join(countries[:2]) + ("\u2026" if len(countries) > 2 else "")
-            product_str = products[0] + (f" +{len(products)-1} more" if len(products) > 1 else "")
-            ts = datetime.now().strftime("%b %d %I:%M %p")
-            st.session_state['session_history'].append(f"{country_str} · {product_str} · {ts}")
-            success = True
-    except Exception as exc:
-        logger.exception("Correlation analysis failed")
-        if placeholder:
-            placeholder.markdown(
-                f"<div class='bubble-bot'>Error: {exc}</div>",
-                unsafe_allow_html=True,
-            )
-        st.error(f"Correlation analysis failed: {exc}")
-    finally:
-        if st.session_state.get("analysis_active_run") == run_id:
-            st.session_state["analysis_inflight"] = False
-            st.session_state["analysis_active_run"] = None
-        if success:
-            st.rerun()
 
 
 def main() -> None:
     st.set_page_config(page_title="ImportInsight AI", layout="wide")
-    st.markdown(_format_css(), unsafe_allow_html=True)
-    st.markdown("""<style>
-[data-testid="stBottom"] > div {
-    background: #0B2A4A !important;
-    padding: 16px 24px !important;
-    border-top: none !important;
-}
-[data-testid="stChatInputContainer"] {
-    background: #FFFFFF !important;
-    border: 2px solid #CBD5E1 !important;
-    border-radius: 32px !important;
-    padding: 6px 10px 6px 20px !important;
-    outline: 4px solid rgba(11,42,74,0.08) !important;
-}
-[data-testid="stChatInputContainer"]:focus-within {
-    border-color: #0B2A4A !important;
-    outline: 4px solid rgba(11,42,74,0.12) !important;
-}
-[data-testid="stChatInputContainer"] textarea {
-    color: #1F2937 !important;
-    font-size: 14px !important;
-    background: transparent !important;
-}
-[data-testid="stChatInputContainer"] textarea::placeholder {
-    color: #9CA3AF !important;
-    opacity: 1 !important;
-}
-</style>""", unsafe_allow_html=True)
-    st.markdown("""
-<style>
-section
-div
-div
-div
-div
-div
-</style>
-""", unsafe_allow_html=True)
-
-
+    st.markdown(get_css(), unsafe_allow_html=True)
+    logger.info("Streamlit UI initialized")
 
     openai.api_type = "azure"
     openai.api_base = os.getenv("AZURE_OPENAI_ENDPOINT")
@@ -872,43 +384,77 @@ div
     api_key = os.getenv("AZURE_OPENAI_API_KEY")
     if not api_key:
         st.error("Please set AZURE_OPENAI_API_KEY before running the app.")
+        logger.error("AZURE_OPENAI_API_KEY missing; blocking startup")
         return
     if not openai.api_base:
         st.error("Please set AZURE_OPENAI_ENDPOINT before running the app.")
+        logger.error("AZURE_OPENAI_ENDPOINT missing; blocking startup")
         return
     openai.api_key = api_key
 
     deployment_id = os.getenv("AZURE_OPENAI_DEPLOYMENT_ID")
     if not deployment_id:
         st.error("Please set AZURE_OPENAI_DEPLOYMENT_ID for the chat completion deployment.")
+        logger.error("AZURE_OPENAI_DEPLOYMENT_ID missing; blocking startup")
         return
 
     if not HTS_DB_PATH.exists():
         st.error(
             "The local HTS database is missing. Run `python scripts/build_hts_sqlite.py` to create data/hts.db before launching the app."
         )
+        logger.error("hts.db missing at %s", HTS_DB_PATH)
         return
 
     conn = get_db_connection(str(HTS_DB_PATH))
+    logger.info("Connected to SQLite database", extra={"path": str(HTS_DB_PATH)})
 
     risk_df = get_risk_df()
-    country_options = sorted(risk_df["country"].tolist())
+    country_options = sorted(risk_df["country"].tolist(), key=str.lower)
     if not country_options:
         country_options = DEFAULT_COUNTRY_SELECTION.copy()
     product_options = load_product_options(conn)
-    display_options = [f"{code} — {desc}" for code, desc in product_options]
-    code_map = dict(zip(display_options, [code for code, _ in product_options]))
+    product_option_rows: list[dict[str, str]] = []
+    for record in product_options:
+        code = (record.get("hts_code") or "").strip()
+        desc = (record.get("description") or "").strip()
+        full_desc = (record.get("full_description") or desc or "").strip()
+        if not code:
+            continue
+        label = f"{code} — {desc}" if desc else code
+        product_option_rows.append(
+            {
+                "code": code,
+                "label": label,
+                "desc": desc,
+                "full": full_desc or label,
+            }
+        )
+
+    product_option_rows.sort(key=lambda r: r["code"])
+    all_display_options = [row["label"] for row in product_option_rows]
+    all_code_map = {row["label"]: row["code"] for row in product_option_rows}
+    code_label_map = {row["code"]: row["label"] for row in product_option_rows}
+    code_map = all_code_map
     if "messages" not in st.session_state:
         st.session_state.messages = []
     st.session_state.setdefault(LAST_RESULT_KEY, None)
-    st.session_state.setdefault("selected_countries", [])
-    st.session_state.setdefault("selected_products_display", [])
+    if "selected_countries" not in st.session_state:
+        st.session_state["selected_countries"] = (
+            country_options[:MAX_COUNTRY_SELECTION] or DEFAULT_COUNTRY_SELECTION.copy()
+        )
+    if "selected_products_display_specific" not in st.session_state:
+        st.session_state["selected_products_display_specific"] = (
+            all_display_options[: min(MAX_PRODUCT_SELECTION, len(all_display_options))]
+            if all_display_options
+            else []
+        )
     st.session_state.setdefault("selected_product_codes", [])
     st.session_state.setdefault("analysis_inflight", False)
     st.session_state.setdefault("analysis_active_run", None)
     st.session_state.setdefault("analysis_request", None)
     st.session_state.setdefault("correlation_signature", None)
     st.session_state.setdefault("chat_scroll_token", 0)
+    st.session_state.setdefault("chart_mode", "ad_valorem")
 
     # do not auto-refill selections - let user control them
 
@@ -916,152 +462,148 @@ div
         "selected_countries",
         MAX_COUNTRY_SELECTION,
     )
-    selected_products_display, product_trimmed = enforce_selection_limit(
-        "selected_products_display",
+    selected_specific_display, specific_trimmed = enforce_selection_limit(
+        "selected_products_display_specific",
         MAX_PRODUCT_SELECTION,
     )
+    render_sidebar(_handle_sidebar_clear)
 
-    with st.sidebar:
-        st.markdown("""
-        <style>
-        [data-testid="stSidebar"] { background-color: #0B2A4A !important; }
-        [data-testid="stSidebar"] * { color: #e2e8f0 !important; }
-        [data-testid="stSidebar"] img { filter: brightness(0) invert(1); }
-        section[data-testid="stSidebar"] > div { padding-top: 0 !important; margin-top: -80px !important; }
-        section[data-testid="stSidebar"] > div > div { padding-top: 0 !important; }
-        section[data-testid="stSidebar"] > div > div > div { padding-top: 0 !important; }
-        [data-testid="stSidebar"] hr { border-color: rgba(255,255,255,0.12) !important; }
-        [data-testid="stSidebar"] [data-baseweb="tag"] {
-            background-color: rgba(255,255,255,0.1) !important;
-            border: 0.5px solid rgba(255,255,255,0.2) !important;
-            border-radius: 6px !important;
-        }
-        [data-testid="stSidebar"] [data-baseweb="tag"] span { color: rgba(255,255,255,0.85) !important; font-size: 11px !important; }
-        [data-testid="stSidebar"] [data-baseweb="select"] > div {
-            background-color: rgba(255,255,255,0.05) !important;
-            border: 0.5px solid rgba(255,255,255,0.12) !important;
-            border-radius: 8px !important;
-        }
-        [data-testid="stSidebar"] .stButton > button {
-            background-color: rgba(255,255,255,0.08) !important;
-            border: 1px solid rgba(255,255,255,0.15) !important;
-            color: #e2e8f0 !important;
-            border-radius: 10px !important;
-            width: 100%;
-        }
-        span[data-baseweb="tag"] { background-color: #0B2A4A !important; border-color: #4F6D7A !important; }
-        span[data-baseweb="tag"] span { color: #ffffff !important; }
-        </style>
-        """, unsafe_allow_html=True)
-        st.image("logo_clean.png", width=120)
+    analysis_running = st.session_state.get("analysis_inflight", False)
+    selected_products, analyse_clicked = render_context_panel(
+        country_options=country_options,
+        product_options=all_display_options,
+        code_map=code_map,
+        max_country=MAX_COUNTRY_SELECTION,
+        max_products=MAX_PRODUCT_SELECTION,
+        country_trimmed=country_trimmed,
+        specific_trimmed=specific_trimmed,
+        analysis_running=analysis_running,
+        on_clear_chat=_handle_clear_inputs,
+        logger=logger,
+    )
+    selected_countries = st.session_state.get("selected_countries", [])
 
-
-        st.markdown("<div style='background:rgba(240,165,0,0.12);border-left:3px solid #f0a500;border-radius:6px;padding:8px 12px;font-size:11px;color:#fde68a;margin:8px 0;'><b>Disclaimer:</b> This tool is for informational purposes only and does not constitute legal advice.</div>", unsafe_allow_html=True)
-        st.markdown("<p style='font-size:9.5px;font-weight:600;text-transform:uppercase;letter-spacing:0.09em;color:rgba(255,255,255,0.35);margin-bottom:6px;'>Recent sessions</p>", unsafe_allow_html=True)
-        if 'session_history' not in st.session_state:
-            st.session_state['session_history'] = []
-        if st.session_state['session_history']:
-            for entry in reversed(st.session_state['session_history'][-4:]):
-                st.markdown(f"<div style='padding:6px 8px;border-radius:6px;font-size:12px;color:rgba(255,255,255,0.55);margin-bottom:3px;background:rgba(255,255,255,0.05);'><span style='color:#4F8FB8;margin-right:6px;'>●</span>{entry}</div>", unsafe_allow_html=True)
-        else:
-            st.markdown("<div style='font-size:11px;color:rgba(255,255,255,0.25);padding:4px 8px;'>No sessions yet</div>", unsafe_allow_html=True)
-
-        st.markdown("<hr>", unsafe_allow_html=True)
-        st.markdown("<p style='font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:0.1em;color:rgba(255,255,255,0.35);margin-bottom:8px;'>Countries</p>", unsafe_allow_html=True)
-        st.multiselect("Countries", options=country_options, key="selected_countries", max_selections=MAX_COUNTRY_SELECTION, label_visibility="hidden")
-        st.markdown("<p style='font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:0.1em;color:rgba(255,255,255,0.35);margin-top:12px;margin-bottom:8px;'>HTS Products</p>", unsafe_allow_html=True)
-        if display_options:
-            st.multiselect("HTS Products", options=display_options, key="selected_products_display", max_selections=MAX_PRODUCT_SELECTION, label_visibility="hidden")
-        st.markdown("<hr>", unsafe_allow_html=True)
-        with st.expander("About", expanded=False):
-            st.caption("ImportInsight AI translates your prompt into SQL and returns the actual HTS rows.")
-        with st.expander("Settings", expanded=False):
-            st.caption("Natural language inputs are translated to SQL, executed locally against a read-only SQLite copy of the HTS data.")
-            st.caption("Responses are deterministic: the SQL output is re-run each time against the local database.")
-        st.markdown("<hr>", unsafe_allow_html=True)
-
-
-    st.markdown("""
-<div style='display:flex;align-items:center;justify-content:space-between;padding:10px 0 14px;border-bottom:1px solid #E5E7EB;margin-bottom:14px;'>
-  <div style='display:flex;align-items:center;gap:10px;'>
-    <span style='font-family:serif;font-size:17px;font-weight:700;color:#0B2A4A;letter-spacing:-0.3px;'>HTS Analysis</span>
-    <span style='font-size:11px;padding:3px 10px;border-radius:100px;background:#F0FDF4;border:0.5px solid #86EFAC;color:#15803D;display:inline-flex;align-items:center;gap:6px;'>
-      <span style='position:relative;width:8px;height:8px;display:inline-block;'>
-        <span style='position:absolute;inset:0;border-radius:50%;background:#22C55E;opacity:0.4;animation:ping 1.5s cubic-bezier(0,0,0.2,1) infinite;'></span>
-        <span style='position:absolute;inset:1px;border-radius:50%;background:#16A34A;display:inline-block;'></span>
-      </span>
-      Connected
-    </span>
-  </div>
-</div>
-<style>
-@keyframes ping { 0% { transform: scale(1); opacity: 0.4; } 75%, 100% { transform: scale(2); opacity: 0; } }
-</style>
-""", unsafe_allow_html=True)
-    context_bar = st.container()
-    with context_bar:
-        st.markdown('<div data-context="true"></div>', unsafe_allow_html=True)
-        selected_c = st.session_state.get("selected_countries", [])
-        selected_p = st.session_state.get("selected_products_display", [])
-
-
-        selected_countries = st.session_state.get("selected_countries", [])
-        selected_products_display = st.session_state.get("selected_products_display", [])
-        st.caption(
-            f"{len(selected_countries)} / {MAX_COUNTRY_SELECTION} countries · {len(selected_products_display)} / {MAX_PRODUCT_SELECTION} products"
-        )
-        if country_trimmed:
-            st.warning(
-                f"Country selection limited to {MAX_COUNTRY_SELECTION}. Extra choices were dropped."
+    if analyse_clicked:
+        # Cheap sanity check: product codes must be non-empty strings.
+        assert all(
+            isinstance(code, str) and len(code) > 0 for code in selected_products
+        ), f"Bad product codes going into analysis: {selected_products}"
+        queued = queue_analysis_request(selected_countries, selected_products)
+        if not queued:
+            st.warning("Select at least one country and one product before running analysis.")
+            logger.warning(
+                "Analyse button pressed without valid selections",
+                extra={"countries": selected_countries, "products": selected_products},
             )
-        if product_trimmed:
-            st.warning(
-                f"Product selection limited to {MAX_PRODUCT_SELECTION}. Extra choices were dropped."
-            )
-        current_product_labels = st.session_state.get("selected_products_display", [])
-        valid_product_labels = [label for label in current_product_labels if label in code_map]
-        if len(valid_product_labels) != len(current_product_labels):
-            st.warning("Some selected products are unavailable in the current HTS list.")
-        selected_products = [code_map[label] for label in valid_product_labels]
-        st.session_state["selected_product_codes"] = selected_products
 
-        action_cols = st.columns([1, 1])
-        analyse_disabled = (
-            st.session_state.get("analysis_inflight")
-            or not selected_countries
-            or not selected_products
-        )
-        with action_cols[0]:
-            analyse_clicked = st.button(
-                "Analyze",
-                width="stretch",
-                disabled=analyse_disabled,
-            )
-        with action_cols[1]:
-            if st.button("Clear Inputs", width="stretch", key="context_clear"):
-                reset_app_state()
-                st.rerun()
-        if analyse_clicked:
-            queued = queue_analysis_request(selected_countries, selected_products)
-            if not queued:
-                st.warning("Select at least one country and one product before running analysis.")
-        if st.session_state.get("analysis_inflight"):
-            st.caption("Running analysis…")
-    analysis_stream_placeholder: st.delta_generator.DeltaGenerator | None = None
-    chat_feed = st.container(height=480, border=False)
-    composer = st.container()
+    # Chart mode toggle — persists across reruns so switching is instant
+    _last_analysis = next(
+        (m for m in reversed(st.session_state.get("messages", []))
+         if m.get("type") == "analysis"),
+        None,
+    )
+    _has_specific = bool(_last_analysis and _last_analysis.get("has_specific_data"))
+    _toggle_help = (
+        "Switch the Y axis between the ad valorem percentage rate and the specific duty amount (e.g. $/kg, ¢/dozen)."
+        if _has_specific
+        else "This product has a percentage-based rate only. Select a product with a unit-based rate (e.g. $/kg, ¢/liter) to use this view."
+    )
+    if not _has_specific:
+        st.session_state["chart_mode"] = "ad_valorem"
+    show_specific = st.toggle(
+        "Show specific duty rate ($/unit)",
+        value=(st.session_state["chart_mode"] == "specific"),
+        disabled=not _has_specific,
+        help=_toggle_help,
+    )
+    if _has_specific:
+        st.session_state["chart_mode"] = "specific" if show_specific else "ad_valorem"
 
-    with composer:
-        st.markdown('<div data-composer="true"></div>', unsafe_allow_html=True)
-        st.markdown("""
-<style>
+    _latest_analysis_msg = next(
+        (m for m in reversed(st.session_state.get("messages", [])) if m.get("type") == "analysis"),
+        None,
+    )
+    context_panel_html = None
+    if _latest_analysis_msg:
+        _ctx_rows = _latest_analysis_msg.get("chart_data") or []
+        if _ctx_rows:
+            def _get(row, field):
+                if isinstance(row, dict):
+                    return row.get(field, "—") or "—"
+                return "—"
 
+            _hts_codes = list(dict.fromkeys(_get(r, "HTS Code") for r in _ctx_rows))
+            _hts_label = ", ".join(str(c) for c in _hts_codes if c and c != "—") or "—"
+            _product = _get(_ctx_rows[0], "Product")
 
+            _rows_html = ""
+            for row in _ctx_rows:
+                country = _get(row, "Country")
+                base = _get(row, "Base Rate")
+                eff = _get(row, "Effective Rate (%)")
+                delta = _get(row, "Ch.99 Δ")
+                program = _get(row, "Trade Program")
+                source = _get(row, "Rate Source")
+                risk = _get(row, "Risk Score")
 
+                delta_str = f"{delta}" if delta not in (None, "—", "") else "—"
+                program_str = f" ({program})" if program not in (None, "—", "") else ""
+                _rows_html += (
+                    f"<tr>"
+                    f"<td>{country}</td>"
+                    f"<td>{risk}</td>"
+                    f"<td>{base}</td>"
+                    f"<td>{eff}%</td>"
+                    f"<td>{delta_str}{program_str}</td>"
+                    f"<td style='color:#64748b;font-size:11px;'>{source}</td>"
+                    f"</tr>"
+                )
 
-</style>
-""", unsafe_allow_html=True)
-        prompt = st.chat_input(QUESTION_PLACEHOLDER, key="chat_input")
+            context_panel_html = f"""
+            <style>
+            .tariff-ctx {{ font-size:12px; color:#1F2937; margin-bottom:8px; }}
+            .tariff-ctx summary {{ cursor:pointer; font-size:11px; font-weight:600;
+                color:#0B2A4A; letter-spacing:0.04em; text-transform:uppercase;
+                padding:4px 0; user-select:none; }}
+            .tariff-ctx table {{ width:100%; border-collapse:collapse; margin-top:6px; }}
+            .tariff-ctx th {{ font-size:10px; font-weight:600; color:#64748b;
+                text-transform:uppercase; letter-spacing:0.06em;
+                padding:3px 8px; border-bottom:1px solid #E5E7EB; text-align:left; }}
+            .tariff-ctx td {{ padding:4px 8px; border-bottom:1px solid #F1F5F9; vertical-align:top; }}
+            .tariff-ctx tr:last-child td {{ border-bottom:none; }}
+            </style>
+            <details class="tariff-ctx">
+              <summary>Current analysis context — {_hts_label} · {_product}</summary>
+              <table>
+                <thead><tr>
+                  <th>Country</th><th>Risk</th><th>Base Rate</th>
+                  <th>Effective Rate</th><th>Ch.99 Surcharge</th><th>Source</th>
+                </tr></thead>
+                <tbody>{_rows_html}</tbody>
+              </table>
+            </details>
+            """
+
+    chat_zone = st.container()
+
+    sample_prompts_html = """
+    <style>
+    .sample-prompts { display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; }
+    .sample-prompt { font-size:11px; color:#0B2A4A; background:#F0F4F8;
+        border:1px solid #CBD5E1; border-radius:999px; padding:4px 12px; cursor:default; }
+    </style>
+    <div class='sample-prompts'>
+      <span class='sample-prompt'>Which country has the lowest effective duty rate?</span>
+      <span class='sample-prompt'>Why do the rates differ across countries?</span>
+      <span class='sample-prompt'>What trade program is driving the surcharge?</span>
+    </div>
+    """
+
+    prompt = render_chat_composer(
+        QUESTION_PLACEHOLDER,
+        pre_html=context_panel_html,
+        post_html=sample_prompts_html,
+    )
 
     if prompt is not None:
         question = prompt.strip()
@@ -1069,156 +611,34 @@ div
             st.warning("Please enter a prompt before sending.")
         else:
             timestamp = datetime.now().strftime("%I:%M %p")
+            logger.info("User submitted prompt", extra={"prompt": question})
             append_message({"role": "user", "content": question, "time": timestamp})
             try:
-                sql = translate_question_to_sql(question, deployment_id)
-                df = execute_sql(conn, sql)
-                records = df.head(200).to_dict("records")
-                st.session_state[LAST_RESULT_KEY] = {
-                    "sql": sql,
-                    "row_count": len(df),
-                    "records": records,
-                    "columns": list(df.columns),
-                    "rows_displayed": len(records),
-                }
-                assistant_text = f"Executed SQL and returned {len(df)} row(s)."
+                assistant_text, metadata = answer_question(question, deployment_id, conn)
+                logger.info(
+                    "Assistant response ready",
+                    extra={"mode": metadata.get("mode"), "sql_rows": metadata.get("row_count")},
+                )
+                if metadata.get("mode") == "sql":
+                    assistant_text = (
+                        f"{assistant_text}\n\n_(Ran a fresh SQL query; see \"Last SQL Result\" below.)_"
+                    )
             except Exception as exc:
-                logger.exception("SQL execution failed")
-                st.session_state[LAST_RESULT_KEY] = None
-                assistant_text = f"Error: {exc}"
+                logger.exception("Chat response failed")
+                assistant_text = f"Error while answering your question: {exc}"
             append_message(
                 {"role": "assistant", "content": assistant_text, "time": datetime.now().strftime("%I:%M %p")}
             )
 
-    with chat_feed:
-        st.markdown('<div data-chat="true"></div>', unsafe_allow_html=True)
-        if len(st.session_state.messages) == 0:
-            st.markdown("""
-<div style='display:flex;flex-direction:column;align-items:center;justify-content:center;height:340px;gap:14px;'>
-  <div style='width:56px;height:56px;border-radius:14px;border:2px solid #D1D5DB;display:flex;align-items:center;justify-content:center;'>
-    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <path d="M21 15C21 15.5304 20.7893 16.0391 20.4142 16.4142C20.0391 16.7893 19.5304 17 19 17H7L3 21V5C3 4.46957 3.21071 3.96086 3.58579 3.58579C3.96086 3.21071 4.46957 3 5 3H19C19.5304 3 20.0391 3.21071 20.4142 3.58579C20.7893 3.96086 21 4.46957 21 5V15Z" stroke="#9CA3AF" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-    </svg>
-  </div>
-  <div style='text-align:center;'>
-    <p style='font-size:15px;font-weight:600;color:#374151;margin:0 0 6px;'>Select countries and HTS products, then click <span style="color:#0B2A4A;">Analyze</span> to begin.</p>
-    <p style='font-size:13px;color:#9CA3AF;margin:0;'>Or type a question in the composer below.</p>
-  </div>
-</div>
-""", unsafe_allow_html=True)
-        for msg in st.session_state.messages:
-            timestamp = msg.get("time", "")
-            if msg["role"] == "user":
-                st.markdown(
-                    f"<div class='bubble-label bubble-label-right'>You</div><div class='bubble-user'>{msg['content']}</div><div class='timestamp timestamp-right'>{timestamp}</div><div class='clearfix'></div>",
-                    unsafe_allow_html=True,
-                )
-                continue
-
-            if msg.get("type") == "analysis":
-                st.markdown(
-                    "<div class='bubble-label'>Assistant</div>",
-                    unsafe_allow_html=True,
-                )
-                selections = msg.get("selections", {})
-                selection_text = []
-                if selections.get("countries"):
-                    selection_text.append("Countries: " + ", ".join(selections["countries"]))
-                if selections.get("products"):
-                    selection_text.append("Products: " + ", ".join(selections["products"]))
-                if selection_text:
-                    st.markdown(
-                        f"<div class='analysis-meta'>{' · '.join(selection_text)}</div>",
-                        unsafe_allow_html=True,
-                    )
-                fig_payload = msg.get("plotly_fig")
-                if fig_payload:
-                    fig = go.Figure(fig_payload)
-                    st.plotly_chart(fig, width="stretch")
-                st.markdown(
-                    f"<div class='bubble-bot'>{msg['content']}</div><div class='timestamp'>{timestamp}</div><div class='clearfix'></div>",
-                    unsafe_allow_html=True,
-                )
-                duty_exclusions = msg.get("duty_exclusions") or []
-                exclusion_text = msg.get("duty_exclusion_message")
-                if exclusion_text:
-                    st.warning(exclusion_text)
-                elif duty_exclusions:
-                    listed = ", ".join(
-                        f"{item.get('hts_code')} ({item.get('general_duty_rate_text')})"
-                        for item in duty_exclusions[:3]
-                    )
-                    if len(duty_exclusions) > 3:
-                        listed += f", +{len(duty_exclusions) - 3} more"
-                    st.warning(f"Skipped non-percentage duty rates: {listed}")
-                risk_snapshot = msg.get("risk_snapshot") or []
-                if risk_snapshot:
-                    def render_gauge(s):
-                        score = round(s['score'], 1)
-                        level = s['level']
-                        country = s['country']
-                        needle_pct = min(score, 99)
-                        score_color = '#D85A30' if level == 'High' else '#BA7517' if level in ('Medium','Moderate') else '#1D9E75'
-                        badge_bg = '#FCEBEB' if level == 'High' else '#FAEEDA' if level in ('Medium','Moderate') else '#EAF3DE'
-                        badge_color = '#791F1F' if level == 'High' else '#633806' if level in ('Medium','Moderate') else '#27500A'
-                        return (
-                            f"<div style='background:#fff;border:0.5px solid #E5E7EB;border-radius:10px;padding:12px 14px;margin-bottom:10px;'>"
-                            f"<div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;'>"
-                            f"<span style='font-size:13px;font-weight:600;color:#0B2A4A;'>{country}</span>"
-                            f"<span style='font-size:10.5px;font-weight:500;padding:2px 9px;border-radius:100px;background:{badge_bg};color:{badge_color};'>{level}</span>"
-                            f"</div>"
-                            f"<div style='height:7px;background:#ffffff;border-radius:100px;position:relative;border:0.5px solid #E5E7EB;'>"
-                            f"<div style='position:absolute;left:0;top:0;height:100%;width:33%;background:#1D9E75;border-radius:100px 0 0 100px;'></div>"
-                            f"<div style='position:absolute;left:33%;top:0;height:100%;width:34%;background:#BA7517;'></div>"
-                            f"<div style='position:absolute;left:67%;top:0;height:100%;width:33%;background:#D85A30;border-radius:0 100px 100px 0;'></div>"
-                            f"<div style='position:absolute;top:-4px;left:{needle_pct}%;width:3px;height:15px;background:#0B2A4A;border-radius:2px;transform:translateX(-50%);'></div>"
-                            f"</div>"
-                            f"<div style='display:flex;justify-content:space-between;font-size:9.5px;color:#9CA3AF;margin-top:4px;'><span>Low</span><span>Medium</span><span>High</span></div>"
-                            f"<div style='margin-top:10px;'>"
-                            f"<span style='font-family:monospace;font-size:26px;font-weight:500;color:{score_color};'>{score}</span>"
-                            f"<span style='font-size:12px;color:#9CA3AF;margin-left:3px;'>/ 100</span>"
-                            f"</div></div>"
-                        )
-                    gauges_html = ''.join(render_gauge(s) for s in risk_snapshot)
-                    st.markdown(f"<div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin:8px 0;'>{gauges_html}</div>", unsafe_allow_html=True)
-                chart_data = msg.get("chart_data")
-                if chart_data:
-                    chart_df = pd.DataFrame(
-                        chart_data,
-                        columns=msg.get("chart_columns"),
-                    )
-                    st.dataframe(chart_df)
-                continue
-
-            st.markdown(
-                f"<div class='bubble-label'>Assistant</div><div class='bubble-bot'>{msg['content']}</div><div class='timestamp'>{timestamp}</div><div class='clearfix'></div>",
-                unsafe_allow_html=True,
-            )
-
-        analysis_stream_placeholder = st.empty()
-        maybe_run_analysis(
-            conn,
-            deployment_id,
-            risk_df,
-            analysis_stream_placeholder,
+    latest_result = st.session_state.get(LAST_RESULT_KEY)
+    with chat_zone:
+        analysis_stream_placeholder = render_chat_feed(
+            st.session_state.get("messages", []),
+            latest_result,
+            code_lookup=code_label_map,
+            chart_mode=st.session_state.get("chart_mode", "ad_valorem"),
+            render_chart=render_correlation_chart,
         )
-        latest_result = st.session_state.get(LAST_RESULT_KEY)
-        if latest_result:
-            st.markdown("---")
-            st.markdown("### Last SQL Result")
-            st.code(latest_result["sql"], language="sql")
-            st.caption(
-                f"Returned {latest_result['row_count']} row(s); showing {latest_result['rows_displayed']} row(s) below."
-            )
-            if latest_result["records"]:
-                st.dataframe(
-                    pd.DataFrame(latest_result["records"], columns=latest_result["columns"])
-                )
-            else:
-                st.info("The last query returned no rows.")
-        st.markdown('<div data-anchor="chat-end" id="chat-end"></div>', unsafe_allow_html=True)
-
-    # analysis runs inside chat_feed above
 
     components.html("""<script>
     (function() {
@@ -1233,21 +653,6 @@ div
         setInterval(fix, 500);
     })();
     </script>""", height=0)
-
-    components.html(
-        f"""
-        <script>
-        const marker = window.parent.document.querySelector('div[data-anchor="chat-end"]');
-        if (marker) {{
-            const chatBlock = marker.closest('div[data-testid="stVerticalBlock"]');
-            if (chatBlock) {{
-                chatBlock.scrollTop = chatBlock.scrollHeight;
-            }}
-        }}
-        </script>
-        """,
-        height=0,
-    )
 
 if __name__ == "__main__":
     main()
