@@ -1,4 +1,4 @@
-# Export-Import Sanctions Chatbot
+# Import Insight AI
 
 This is a Streamlit chatbot that translates natural-language questions into SQL and runs them deterministically against a local copy of the U.S. Harmonized Tariff Schedule (HTS).
 

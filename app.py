@@ -1,104 +1,40 @@
 from __future__ import annotations
 # ImportInsight AI
-import json
 import logging
 import os
-import re
 import sqlite3
-import uuid
-from dataclasses import dataclass
 from datetime import datetime
-import itertools
 from pathlib import Path
 
 from dotenv import load_dotenv
 import openai
 import pandas as pd
-import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 import streamlit.components.v1 as components
 
+from analysis import maybe_run_analysis, queue_analysis_request
+from chat import answer_question, append_message
 from risk_model import get_risk_df
+from session import enforce_selection_limit, reset_app_state
+from utils import LAST_RESULT_KEY
 
 load_dotenv()
 
 logger = logging.getLogger(__name__)
 
 HTS_DB_PATH = Path(__file__).resolve().parent / "data" / "hts.db"
-HTS_COLUMNS = [
-    "hts_code",
-    "chapter",
-    "heading",
-    "subheading",
-    "statistical_suffix",
-    "indent_level",
-    "description",
-    "full_description",
-    "unit",
-    "general_duty_rate",
-    "special_duty_rate",
-    "column2_duty_rate",
-    "quota_quantity",
-    "additional_duties",
-]
-
-MAX_PRODUCT_OPTIONS = None
+HTS_VIEW_NAME = "hts_with_ch99"
+MAX_PRODUCT_OPTIONS = 1000
+ENSURE_PRODUCT_CODES = ["0406.40.44.00", "0405.90.20"]
 DEFAULT_COUNTRY_SELECTION = [
     "Cameroon",
     "Russia",
 ]
-SUMMARY_SAMPLE_LIMIT = 60
 MAX_COUNTRY_SELECTION = 3
-MAX_PRODUCT_SELECTION = 3
-
-GENERAL_DUTY_PATTERN = re.compile(r"-?\d+(?:\.\d+)?")
+MAX_PRODUCT_SELECTION = 1
 
 QUESTION_PLACEHOLDER = "Ask about tariffs, compliance, or trade regulations..."
-
-FREE_DUTY_VALUES = {"free", "", "n/a", "none", "no", "zero"}
-SPECIFIC_HINTS = [
-    " per ",
-    "/",
-    " each",
-    " doz",
-    " dozen",
-    " kg",
-    " lb",
-    " liter",
-    " litres",
-    " pair",
-    " kg.",
-    " kg)",
-    "units",
-    "unit",
-]
-CURRENCY_HINTS = ["$", "¢"]
-
-
-@dataclass
-class DutyRate:
-    raw_text: str
-    kind: str
-    ad_valorem_rate: float | None = None
-    specific_amount: float | None = None
-    specific_unit: str | None = None
-    notes: str | None = None
-
-
-SQL_SYSTEM_PROMPT = (
-    "You are a SQL generator for a SQLite database containing a single table named `hts`. "
-    "The available text columns in `hts` are: "
-    + ", ".join(HTS_COLUMNS)
-    + ". Always respond with exactly one valid SQLite SELECT statement. "
-    "Do not include surrounding markdown, explanations, or additional text. "
-    "The SQL will be executed as-is against the HTS database, so refer only to the columns listed above and avoid modifications (INSERT/UPDATE/DELETE/PRAGMA)."
-)
-
-SELECT_PATTERN = re.compile(r"SELECT\b.*", re.IGNORECASE | re.DOTALL)
-
-LAST_RESULT_KEY = "latest_hts_result"
-
 
 def _format_css() -> str:
     return """
@@ -370,7 +306,7 @@ def load_product_options(_conn: sqlite3.Connection) -> list[tuple[str, str]]:
         limit_clause = " LIMIT ?"
         params = (MAX_PRODUCT_OPTIONS,)
     query = (
-        'SELECT hts_code, description FROM hts '
+        f'SELECT hts_code, description FROM {HTS_VIEW_NAME} '
         'WHERE hts_code IS NOT NULL AND hts_code <> "" '
         f'ORDER BY hts_code{limit_clause}'
     )
@@ -379,482 +315,30 @@ def load_product_options(_conn: sqlite3.Connection) -> list[tuple[str, str]]:
     except Exception as exc:
         logger.warning("Failed to load product options: %s", exc)
         return []
+
+    missing_codes: list[str] = []
+    if ENSURE_PRODUCT_CODES:
+        present = set(df["hts_code"].tolist())
+        missing_codes = [code for code in ENSURE_PRODUCT_CODES if code not in present]
+    if missing_codes:
+        placeholders = ",".join(["?"] * len(missing_codes))
+        ensure_query = (
+            f"SELECT hts_code, description FROM {HTS_VIEW_NAME} "
+            f"WHERE hts_code IN ({placeholders})"
+        )
+        try:
+            ensure_df = pd.read_sql_query(ensure_query, _conn, params=missing_codes)
+            if not ensure_df.empty:
+                df = pd.concat([df, ensure_df], ignore_index=True)
+        except Exception as exc:
+            logger.warning("Failed to fetch ensured HTS codes: %s", exc)
+
+    if df.empty:
+        return []
+    df = df.drop_duplicates(subset=["hts_code"]).sort_values("hts_code")
     return list(df.itertuples(index=False, name=None))
 
 
-def _extract_first_number(value: str) -> tuple[float | None, re.Match | None]:
-    match = GENERAL_DUTY_PATTERN.search(value)
-    if not match:
-        return None, None
-    try:
-        return float(match.group(0)), match
-    except ValueError:
-        return None, match
-
-
-def _has_specific_hint(value: str) -> bool:
-    lowered = value.lower()
-    return any(hint in lowered for hint in SPECIFIC_HINTS) or any(symbol in value for symbol in CURRENCY_HINTS)
-
-
-def parse_general_duty(value: str | float | int | None) -> DutyRate:
-    if value is None:
-        return DutyRate(raw_text="", kind="text", notes="missing duty")
-    if isinstance(value, (int, float)):
-        return DutyRate(raw_text=str(value), kind="ad_valorem", ad_valorem_rate=float(value))
-
-    raw_text = str(value).strip()
-    normalized = raw_text.lower()
-    if normalized in FREE_DUTY_VALUES:
-        return DutyRate(raw_text=raw_text, kind="ad_valorem", ad_valorem_rate=0.0, notes="duty-free entry")
-
-    has_percent = "%" in raw_text
-    has_specific = _has_specific_hint(raw_text)
-
-    number, match = _extract_first_number(raw_text)
-    if has_percent and not has_specific and number is not None:
-        return DutyRate(raw_text=raw_text, kind="ad_valorem", ad_valorem_rate=number)
-
-    if has_percent and has_specific:
-        return DutyRate(
-            raw_text=raw_text,
-            kind="text",
-            notes="contains mixed ad valorem and specific components",
-        )
-
-    if has_specific and number is not None:
-        unit_fragment = raw_text.replace(match.group(0), "", 1).strip() if match else raw_text
-        unit_fragment = unit_fragment or None
-        return DutyRate(
-            raw_text=raw_text,
-            kind="specific",
-            specific_amount=number,
-            specific_unit=unit_fragment,
-        )
-
-    if number is not None and has_percent:
-        return DutyRate(raw_text=raw_text, kind="ad_valorem", ad_valorem_rate=number)
-
-    if number is not None and not has_percent and not has_specific:
-        return DutyRate(
-            raw_text=raw_text,
-            kind="text",
-            notes="numeric value without context",
-        )
-
-    return DutyRate(raw_text=raw_text, kind="text", notes="unparsable duty text")
-
-
-def compute_selection_signature(countries: list[str], products: list[str]) -> tuple[tuple[str, ...], tuple[str, ...]] | None:
-    if not countries or not products:
-        return None
-    return (tuple(countries), tuple(products))
-
-
-def enforce_selection_limit(key: str, max_items: int) -> tuple[list[str], bool]:
-    """Trim a list in session_state before widgets using the same key are rendered."""
-    selections = st.session_state.get(key, []) or []
-    if not isinstance(selections, list):
-        selections = list(selections)
-        st.session_state[key] = selections
-    trimmed = len(selections) > max_items
-    if trimmed:
-        st.session_state[key] = selections[:max_items]
-        selections = st.session_state[key]
-    return selections, trimmed
-
-
-def build_sql_messages(question: str) -> list[dict]:
-    return [
-        {"role": "system", "content": SQL_SYSTEM_PROMPT},
-        {
-            "role": "user",
-            "content": (
-                f"Question: {question}\n"
-                "Return only one SELECT statement that answers the question."
-            ),
-        },
-    ]
-
-
-def extract_select_statement(text: str) -> str | None:
-    cleaned = text.replace("`", "").strip()
-    match = SELECT_PATTERN.search(cleaned)
-    if not match:
-        return None
-    stmt = match.group(0)
-    if ";" in stmt:
-        stmt = stmt.split(";")[0]
-    return stmt.strip()
-
-
-def translate_question_to_sql(question: str, deployment_id: str) -> str:
-    messages = build_sql_messages(question)
-    response = openai.chat.completions.create(
-        model=deployment_id,
-        messages=messages,
-        temperature=1,
-    )
-    raw_content = response.choices[0].message.content
-    sql = extract_select_statement(raw_content)
-    if not sql or not sql.strip().lower().startswith("select"):
-        raise ValueError("The model did not return a valid SELECT statement.")
-    return sql
-
-
-def execute_sql(conn: sqlite3.Connection, sql: str) -> pd.DataFrame:
-    normalized = sql.strip().lower()
-    if not normalized.startswith("select"):
-        raise ValueError("Only SELECT statements are allowed.")
-    return pd.read_sql_query(sql, conn)
-
-
-def fetch_tariffs_for_codes(
-    conn: sqlite3.Connection,
-    selected_codes: list[str],
-) -> pd.DataFrame:
-    if not selected_codes:
-        return pd.DataFrame()
-    placeholders = ",".join(["?"] * len(selected_codes))
-    query = (
-        "SELECT hts_code, description, general_duty_rate "
-        "FROM hts WHERE hts_code IN (" + placeholders + ")"
-    )
-    df = pd.read_sql_query(query, conn, params=selected_codes)
-    if df.empty:
-        return df
-    df = df.rename(columns={"general_duty_rate": "general_duty_rate_text"})
-    df["general_duty_rate_text"] = df["general_duty_rate_text"].fillna("").astype(str)
-    parsed_rates = df["general_duty_rate_text"].apply(parse_general_duty)
-    df["duty_kind"] = [rate.kind for rate in parsed_rates]
-    df["ad_valorem_rate"] = [rate.ad_valorem_rate for rate in parsed_rates]
-    df["specific_amount"] = [rate.specific_amount for rate in parsed_rates]
-    df["specific_unit"] = [rate.specific_unit for rate in parsed_rates]
-    df["duty_notes"] = [rate.notes for rate in parsed_rates]
-    return df
-
-
-def build_correlation_dataframe(
-    selected_countries: list[str],
-    tariff_df: pd.DataFrame,
-    risk_df: pd.DataFrame,
-) -> tuple[pd.DataFrame, list[dict]]:
-    if not selected_countries or tariff_df.empty:
-        return pd.DataFrame(), []
-
-    country_subset = risk_df[risk_df["country"].isin(selected_countries)].copy()
-    if country_subset.empty:
-        return pd.DataFrame(), []
-
-    valid_products = tariff_df[
-        (tariff_df["duty_kind"] == "ad_valorem") & tariff_df["ad_valorem_rate"].notna()
-    ].copy()
-    excluded_mask = ~(
-        (tariff_df["duty_kind"] == "ad_valorem") & tariff_df["ad_valorem_rate"].notna()
-    )
-    excluded_records = tariff_df.loc[excluded_mask, ["hts_code", "description", "general_duty_rate_text", "duty_kind"]]
-    exclusions = excluded_records.to_dict("records")
-
-    if valid_products.empty:
-        return pd.DataFrame(), exclusions
-
-    country_records = country_subset.to_dict("records")
-    product_records = valid_products.to_dict("records")
-    rows = []
-    for country_meta, product_meta in itertools.product(country_records, product_records):
-        rows.append(
-            {
-                "country": country_meta["country"],
-                "risk_score": country_meta["score"],
-                "risk_level": country_meta["level"],
-                "country_color": country_meta["color"],
-                "hts_code": product_meta["hts_code"],
-                "product_description": product_meta["description"],
-                "ad_valorem_rate": product_meta["ad_valorem_rate"],
-                "general_duty_rate_text": product_meta["general_duty_rate_text"],
-            }
-        )
-    return pd.DataFrame(rows), exclusions
-
-
-def build_risk_snapshot(risk_df: pd.DataFrame, selected_countries: list[str]) -> list[dict]:
-    if not selected_countries:
-        return []
-    subset = risk_df[risk_df["country"].isin(selected_countries)]
-    if subset.empty:
-        return []
-    return subset[["country", "score", "level", "color", "year"]].to_dict("records")
-
-
-def reset_app_state() -> None:
-    st.session_state.messages = []
-    st.session_state[LAST_RESULT_KEY] = None
-    # Remove widget-controlled keys so Streamlit can recreate them cleanly.
-    for widget_key in ["selected_countries", "selected_products_display"]:
-        st.session_state.pop(widget_key, None)
-    st.session_state["selected_product_codes"] = []
-    st.session_state["correlation_signature"] = None
-    st.session_state["analysis_active_run"] = None
-    st.session_state["analysis_inflight"] = False
-    st.session_state["analysis_request"] = None
-    st.session_state["chat_scroll_token"] = 0
-
-
-def append_message(message: dict) -> None:
-    st.session_state.messages.append(message)
-    st.session_state["chat_scroll_token"] = st.session_state.get("chat_scroll_token", 0) + 1
-
-
-def render_correlation_chart(df: pd.DataFrame) -> go.Figure | None:
-    if df.empty:
-        return None
-    fig = px.scatter(
-        df,
-        x="risk_score",
-        y="ad_valorem_rate",
-        color="country",
-        symbol="hts_code",
-        hover_data={
-            "country": True,
-            "risk_score": ":.1f",
-            "risk_level": True,
-            "hts_code": True,
-            "ad_valorem_rate": ":.2f",
-            "general_duty_rate_text": True,
-            "product_description": True,
-        },
-    )
-    fig.update_layout(
-        xaxis_title="Country Risk Score",
-        yaxis_title="General Duty Rate (% ad valorem)",
-        legend_title="Country / HTS Code",
-        template="plotly_white",
-        margin=dict(l=20, r=20, t=50, b=20),
-        paper_bgcolor="white",
-        plot_bgcolor="#F8FAFC",
-        font=dict(family="Inter, sans-serif", size=12, color="#374151"),
-        xaxis=dict(
-            gridcolor="#E2E8F0",
-            linecolor="#CBD5E1",
-            tickfont=dict(size=11, color="#6B7280"),
-            title_font=dict(size=12, color="#374151", family="Inter, sans-serif"),
-            zeroline=False,
-        ),
-        yaxis=dict(
-            gridcolor="#E2E8F0",
-            linecolor="#CBD5E1",
-            tickfont=dict(size=11, color="#6B7280"),
-            title_font=dict(size=12, color="#374151", family="Inter, sans-serif"),
-            zeroline=False,
-        ),
-        legend=dict(
-            bgcolor="white",
-            bordercolor="#E2E8F0",
-            borderwidth=1,
-            font=dict(size=11, color="#374151"),
-            title_font=dict(size=11, color="#0B2A4A"),
-        ),
-        hoverlabel=dict(
-            bgcolor="white",
-            bordercolor="#E2E8F0",
-            font=dict(size=12, color="#0B2A4A", family="Inter, sans-serif"),
-        ),
-    )
-    fig.update_traces(marker=dict(size=14, line=dict(width=1.5, color="white"), opacity=0.9))
-    return fig
-
-
-def stream_analysis_to_placeholder(
-    df: pd.DataFrame,
-    deployment_id: str,
-    placeholder: st.delta_generator.DeltaGenerator | None,
-) -> str:
-    subset = df.head(SUMMARY_SAMPLE_LIMIT)
-    stats = {
-        "count_pairs": len(df),
-        "countries": sorted(df["country"].unique().tolist()),
-        "hts_codes": sorted(df["hts_code"].unique().tolist()),
-        "risk_min": float(df["risk_score"].min()),
-        "risk_max": float(df["risk_score"].max()),
-        "duty_min": float(df["ad_valorem_rate"].min()),
-        "duty_max": float(df["ad_valorem_rate"].max()),
-    }
-    payload = {
-        "stats": stats,
-        "sample_rows": subset.to_dict("records"),
-    }
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "You are a trade compliance analyst. Explain correlations between country risk scores "
-                "and general duty rates in business language. Highlight extremes, clusters, and any anomalies."
-            ),
-        },
-        {
-            "role": "user",
-            "content": (
-                "Write a concise paragraph (<=140 words) summarizing these tariff-risk pairs "
-                "and give 1-2 actionable insights:\n"
-                f"{json.dumps(payload)}"
-            ),
-        },
-    ]
-    stream = openai.chat.completions.create(
-        model=deployment_id,
-        messages=messages,
-        temperature=1,
-        stream=True,
-    )
-    full_text = ""
-    for chunk in stream:
-        delta = chunk.choices[0].delta.content if chunk.choices and chunk.choices[0].delta else None
-        if not delta:
-            continue
-        full_text += delta
-        if placeholder:
-            placeholder.markdown(
-                f"<div class='bubble-bot'>{full_text}▌</div>",
-                unsafe_allow_html=True,
-            )
-    if placeholder:
-        placeholder.markdown(
-            f"<div class='bubble-bot'>{full_text}</div>",
-            unsafe_allow_html=True,
-        )
-    return full_text.strip()
-
-
-def queue_analysis_request(
-    selected_countries: list[str],
-    selected_products: list[str],
-) -> bool:
-    signature = compute_selection_signature(selected_countries, selected_products)
-    if not signature:
-        return False
-    st.session_state["analysis_request"] = {
-        "countries": list(selected_countries),
-        "products": list(selected_products),
-        "signature": signature,
-    }
-    return True
-
-
-def maybe_run_analysis(
-    conn: sqlite3.Connection,
-    deployment_id: str,
-    risk_df: pd.DataFrame,
-    placeholder: st.delta_generator.DeltaGenerator | None,
-) -> None:
-    request = st.session_state.get("analysis_request")
-    if not request or st.session_state.get("analysis_inflight"):
-        return
-
-    countries = request.get("countries", [])
-    products = request.get("products", [])
-    signature = request.get("signature")
-    if not countries or not products:
-        st.session_state["analysis_request"] = None
-        return
-
-    run_id = uuid.uuid4().hex
-    st.session_state["analysis_request"] = None
-    st.session_state["analysis_inflight"] = True
-    st.session_state["analysis_active_run"] = run_id
-    success = False
-
-    try:
-        with st.spinner("Running analysis..."):
-            tariff_df = fetch_tariffs_for_codes(conn, products)
-            corr_df, duty_exclusions = build_correlation_dataframe(countries, tariff_df, risk_df)
-            timestamp = datetime.now().strftime("%I:%M %p")
-            risk_snapshot = build_risk_snapshot(risk_df, countries)
-            exclusion_message = None
-            if duty_exclusions:
-                preview_labels = [
-                    f"{item['hts_code']} ({item['general_duty_rate_text']})"
-                    for item in duty_exclusions
-                ]
-                preview_limit = 3
-                preview = ", ".join(preview_labels[:preview_limit])
-                if len(preview_labels) > preview_limit:
-                    preview += f", +{len(preview_labels) - preview_limit} more"
-                exclusion_message = (
-                    f"Skipped {len(duty_exclusions)} product(s) with non-percentage duty rates: {preview}."
-                )
-                st.warning(exclusion_message)
-            if corr_df.empty:
-                if duty_exclusions and not tariff_df.empty:
-                    summary_text = (
-                        "All selected products use quantity- or rule-based duty rates, so no ad valorem analysis is available."
-                    )
-                else:
-                    summary_text = "No overlapping tariff-risk data for the current selections."
-                if placeholder:
-                    placeholder.markdown(
-                        f"<div class='bubble-bot'>{summary_text}</div>",
-                        unsafe_allow_html=True,
-                    )
-                append_message(
-                    {
-                        "role": "assistant",
-                        "content": summary_text,
-                        "time": timestamp,
-                        "type": "analysis",
-                        "chart_data": corr_df.to_dict("records") if not corr_df.empty else [],
-                        "chart_columns": corr_df.columns.tolist(),
-                        "risk_snapshot": risk_snapshot,
-                        "selections": {
-                            "countries": countries,
-                            "products": products,
-                        },
-                        "duty_exclusions": duty_exclusions,
-                        "duty_exclusion_message": exclusion_message,
-                    }
-                )
-            else:
-                fig = render_correlation_chart(corr_df)
-                summary_text = stream_analysis_to_placeholder(corr_df, deployment_id, placeholder)
-                append_message(
-                    {
-                        "role": "assistant",
-                        "content": summary_text,
-                        "time": timestamp,
-                        "type": "analysis",
-                        "plotly_fig": fig.to_dict() if fig else None,
-                        "chart_data": corr_df.to_dict("records"),
-                        "chart_columns": corr_df.columns.tolist(),
-                        "risk_snapshot": risk_snapshot,
-                        "selections": {
-                            "countries": countries,
-                            "products": products,
-                        },
-                        "duty_exclusions": duty_exclusions,
-                        "duty_exclusion_message": exclusion_message,
-                    }
-                )
-            st.session_state["correlation_signature"] = signature
-            if 'session_history' not in st.session_state:
-                st.session_state['session_history'] = []
-            country_str = ", ".join(countries[:2]) + ("\u2026" if len(countries) > 2 else "")
-            product_str = products[0] + (f" +{len(products)-1} more" if len(products) > 1 else "")
-            ts = datetime.now().strftime("%b %d %I:%M %p")
-            st.session_state['session_history'].append(f"{country_str} · {product_str} · {ts}")
-            success = True
-    except Exception as exc:
-        logger.exception("Correlation analysis failed")
-        if placeholder:
-            placeholder.markdown(
-                f"<div class='bubble-bot'>Error: {exc}</div>",
-                unsafe_allow_html=True,
-            )
-        st.error(f"Correlation analysis failed: {exc}")
-    finally:
-        if st.session_state.get("analysis_active_run") == run_id:
-            st.session_state["analysis_inflight"] = False
-            st.session_state["analysis_active_run"] = None
-        if success:
-            st.rerun()
 
 
 def main() -> None:
@@ -1039,10 +523,6 @@ div
     context_bar = st.container()
     with context_bar:
         st.markdown('<div data-context="true"></div>', unsafe_allow_html=True)
-        selected_c = st.session_state.get("selected_countries", [])
-        selected_p = st.session_state.get("selected_products_display", [])
-
-
         selected_countries = st.session_state.get("selected_countries", [])
         selected_products_display = st.session_state.get("selected_products_display", [])
         st.caption(
@@ -1077,7 +557,7 @@ div
             )
         with action_cols[1]:
             if st.button("Clear Inputs", width="stretch", key="context_clear"):
-                reset_app_state()
+                reset_app_state(extra_widget_keys=["selected_products_display"])
                 st.rerun()
         if analyse_clicked:
             queued = queue_analysis_request(selected_countries, selected_products)
@@ -1115,23 +595,19 @@ div
             timestamp = datetime.now().strftime("%I:%M %p")
             append_message({"role": "user", "content": question, "time": timestamp})
             try:
-                sql = translate_question_to_sql(question, deployment_id)
-                df = execute_sql(conn, sql)
-                records = df.head(200).to_dict("records")
-                st.session_state[LAST_RESULT_KEY] = {
-                    "sql": sql,
-                    "row_count": len(df),
-                    "records": records,
-                    "columns": list(df.columns),
-                    "rows_displayed": len(records),
-                }
-                assistant_text = f"Executed SQL and returned {len(df)} row(s)."
+                assistant_text, metadata = answer_question(question, deployment_id, conn)
             except Exception as exc:
-                logger.exception("SQL execution failed")
+                logger.exception("Chat flow failed")
                 st.session_state[LAST_RESULT_KEY] = None
                 assistant_text = f"Error: {exc}"
+                metadata = {"mode": "error"}
             append_message(
-                {"role": "assistant", "content": assistant_text, "time": datetime.now().strftime("%I:%M %p")}
+                {
+                    "role": "assistant",
+                    "content": assistant_text,
+                    "time": datetime.now().strftime("%I:%M %p"),
+                    "metadata": metadata,
+                }
             )
         st.rerun()
 
@@ -1185,7 +661,27 @@ div
                     scores = [s['score'] for s in risk_snapshot]
                     avg_score = sum(scores) / len(scores)
                     chart_df_summary = pd.DataFrame(chart_data, columns=msg.get("chart_columns"))
-                    lowest_duty_row = chart_df_summary.loc[chart_df_summary['ad_valorem_rate'].idxmin()] if not chart_df_summary.empty else None
+                    if not chart_df_summary.empty:
+                        rate_column = "Effective Rate (%)" if "Effective Rate (%)" in chart_df_summary.columns else None
+                        if rate_column:
+                            numeric_rates = (
+                                chart_df_summary[rate_column]
+                                .astype(str)
+                                .str.replace("%", "", regex=False)
+                                .str.strip()
+                                .replace("", pd.NA)
+                                .astype(float)
+                            )
+                            chart_df_summary["_effective_rate_numeric"] = numeric_rates
+                            if numeric_rates.notna().any():
+                                lowest_idx = numeric_rates.idxmin()
+                                lowest_duty_row = chart_df_summary.loc[lowest_idx]
+                            else:
+                                lowest_duty_row = None
+                        else:
+                            lowest_duty_row = None
+                    else:
+                        lowest_duty_row = None
                     if avg_score >= 50:
                         risk_label = "⚠ High avg risk"
                         risk_color = "#C0392B"
@@ -1198,8 +694,16 @@ div
                         risk_label = "✓ Low avg risk"
                         risk_color = "#1E8449"
                         risk_bg = "#D5F5E3"
-                    best_country = lowest_duty_row['country'] if lowest_duty_row is not None else "N/A"
-                    best_rate = f"{lowest_duty_row['ad_valorem_rate']:.1f}%" if lowest_duty_row is not None else "N/A"
+                    country_col = "Country" if "Country" in chart_df_summary.columns else None
+                    best_country = (
+                        lowest_duty_row[country_col] if (lowest_duty_row is not None and country_col) else "N/A"
+                    )
+                    best_rate_value = (
+                        lowest_duty_row["_effective_rate_numeric"]
+                        if lowest_duty_row is not None and "_effective_rate_numeric" in lowest_duty_row
+                        else None
+                    )
+                    best_rate = f"{best_rate_value:.1f}%" if isinstance(best_rate_value, (int, float)) and pd.notna(best_rate_value) else "N/A"
                     st.markdown(f"""
                     <div style='display:flex;gap:10px;margin-bottom:14px;align-items:stretch;'>
                         <div style='flex:1;background:{risk_bg};border-radius:12px;padding:12px 16px;border:1px solid {risk_color}22;'>
@@ -1304,7 +808,7 @@ div
                         st.markdown("<div style='margin-top:14px;display:flex;flex-wrap:wrap;gap:8px;'>", unsafe_allow_html=True)
                         for suggestion in suggestions:
                             if st.button(suggestion, key=f"chip_{hash(suggestion)}_{timestamp}"):
-                                st.session_state.setdefault("messages", []).append({"role": "user", "content": suggestion, "time": timestamp})
+                                st.session_state["chip_question"] = suggestion
                                 st.rerun()
                         st.markdown("</div>", unsafe_allow_html=True)
                 else:

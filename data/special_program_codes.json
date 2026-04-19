@@ -1,0 +1,425 @@
+{
+  "A": {
+    "countries": [
+      "Afghanistan",
+      "Albania",
+      "Algeria",
+      "Angola",
+      "Argentina",
+      "Armenia",
+      "Azerbaijan",
+      "Benin",
+      "Bhutan",
+      "Bolivia",
+      "Botswana",
+      "Brazil",
+      "Burkina Faso",
+      "Burma/Myanmar",
+      "Burundi",
+      "Cambodia",
+      "Cameroon",
+      "Cape Verde",
+      "Central African Republic",
+      "Chad",
+      "Colombia",
+      "Costa Rica",
+      "Democratic Republic of the Congo",
+      "Djibouti",
+      "Dominican Republic",
+      "Ecuador",
+      "Egypt",
+      "El Salvador",
+      "Eritrea",
+      "Ethiopia",
+      "Gabon",
+      "Georgia",
+      "Ghana",
+      "Guatemala",
+      "Guinea",
+      "Guinea-Bissau",
+      "Haiti",
+      "Honduras",
+      "Indonesia",
+      "Iraq",
+      "Ivory Coast",
+      "Jamaica",
+      "Jordan",
+      "Kazakhstan",
+      "Kenya",
+      "Kosovo",
+      "Kyrgyzstan",
+      "Lesotho",
+      "Liberia",
+      "Madagascar",
+      "Malawi",
+      "Maldives",
+      "Mali",
+      "Mauritania",
+      "Moldova",
+      "Mongolia",
+      "Morocco",
+      "Mozambique",
+      "Namibia",
+      "Nepal",
+      "Nicaragua",
+      "Niger",
+      "Nigeria",
+      "Pakistan",
+      "Panama",
+      "Papua New Guinea",
+      "Peru",
+      "Philippines",
+      "Republic of the Congo",
+      "Senegal",
+      "Sierra Leone",
+      "South Africa",
+      "South Sudan",
+      "Suriname",
+      "Tanzania",
+      "Thailand",
+      "The Gambia",
+      "Timor-Leste",
+      "Tunisia",
+      "Uganda",
+      "Ukraine",
+      "Zambia",
+      "Zimbabwe"
+    ],
+    "label": "Generalized System of Preferences (GSP)",
+    "notes": "Subset limited to countries available in risk dataset.",
+    "type": "static_country_list"
+  },
+  "A*": {
+    "countries": [
+      "Argentina",
+      "Thailand",
+      "Ecuador",
+      "Brazil",
+      "Indonesia",
+      "Philippines",
+      "Jamaica",
+      "Suriname",
+      "Pakistan",
+      "Ukraine",
+      "Kazakhstan",
+      "Jordan",
+      "Egypt"
+    ],
+    "label": "GSP (Countries Excluded from Eligibility)",
+    "notes": "Countries excluded from GSP benefits per user-provided list.",
+    "type": "static_country_list"
+  },
+  "A+": {
+    "countries": [
+      "Afghanistan",
+      "Angola",
+      "Benin",
+      "Bhutan",
+      "Burkina Faso",
+      "Burma/Myanmar",
+      "Burundi",
+      "Cambodia",
+      "Central African Republic",
+      "Chad",
+      "Democratic Republic of the Congo",
+      "Djibouti",
+      "Ethiopia",
+      "Guinea",
+      "Guinea-Bissau",
+      "Haiti",
+      "Lesotho",
+      "Liberia",
+      "Madagascar",
+      "Malawi",
+      "Mali",
+      "Mauritania",
+      "Mozambique",
+      "Nepal",
+      "Niger",
+      "Senegal",
+      "Sierra Leone",
+      "South Sudan",
+      "Tanzania",
+      "The Gambia",
+      "Timor-Leste",
+      "Uganda",
+      "Yemen",
+      "Zambia"
+    ],
+    "label": "GSP Least-Developed Beneficiaries",
+    "notes": "Limited to least-developed countries present in risk dataset.",
+    "type": "static_country_list"
+  },
+  "AU": {
+    "countries": [
+      "Australia"
+    ],
+    "label": "Australia Special Rate",
+    "notes": "FTA rate for Australia",
+    "type": "static_country_list"
+  },
+  "B": {
+    "countries": [],
+    "label": "Automotive Products Trade Act (APTA)",
+    "notes": "Country coverage pending; treat as unresolved.",
+    "type": "dynamic_program"
+  },
+  "BH": {
+    "countries": [
+      "Bahrain"
+    ],
+    "label": "Bahrain Special Rate",
+    "notes": "Bahrain FTA program",
+    "type": "static_country_list"
+  },
+  "CA": {
+    "countries": [
+      "Canada"
+    ],
+    "label": "NAFTA/USMCA (Canada)",
+    "notes": "Canadian preferential rate",
+    "type": "static_country_list"
+  },
+  "CL": {
+    "countries": [
+      "Chile"
+    ],
+    "label": "Chile FTA",
+    "notes": "Chile-US FTA",
+    "type": "static_country_list"
+  },
+  "CO": {
+    "countries": [
+      "Colombia"
+    ],
+    "label": "Colombia FTA",
+    "notes": "Colombia Trade Promotion Agreement",
+    "type": "static_country_list"
+  },
+  "D": {
+    "countries": [
+      "Angola",
+      "Benin",
+      "Botswana",
+      "Burkina Faso",
+      "Burundi",
+      "Cameroon",
+      "Cape Verde",
+      "Chad",
+      "Democratic Republic of the Congo",
+      "Djibouti",
+      "Ethiopia",
+      "Gabon",
+      "Ghana",
+      "Guinea",
+      "Guinea-Bissau",
+      "Kenya",
+      "Lesotho",
+      "Liberia",
+      "Madagascar",
+      "Malawi",
+      "Mali",
+      "Mozambique",
+      "Namibia",
+      "Niger",
+      "Nigeria",
+      "Republic of the Congo",
+      "Senegal",
+      "Sierra Leone",
+      "South Africa",
+      "Tanzania",
+      "The Gambia",
+      "Uganda",
+      "Zambia"
+    ],
+    "label": "African Growth and Opportunity Act (AGOA)",
+    "notes": "Subset limited to risk dataset countries.",
+    "type": "static_country_list"
+  },
+  "E": {
+    "countries": [
+      "Haiti",
+      "Jamaica"
+    ],
+    "label": "Caribbean Basin Initiative (CBERA)",
+    "notes": "Only Haiti and Jamaica exist in current risk dropdown; other territories omitted.",
+    "type": "static_country_list"
+  },
+  "E*": {
+    "countries": [],
+    "label": "CBI Exclusions",
+    "notes": "Coverage varies by HTS; treat as unresolved.",
+    "type": "dynamic_program"
+  },
+  "IL": {
+    "countries": [
+      "Israel"
+    ],
+    "label": "Israel FTA",
+    "notes": "Requires Israel to appear in risk data to take effect.",
+    "type": "static_country_list"
+  },
+  "J": {
+    "countries": [
+      "Bolivia",
+      "Colombia",
+      "Ecuador",
+      "Peru"
+    ],
+    "label": "Andean Trade Preference Act",
+    "notes": "Legacy ATPA coverage per user list.",
+    "type": "static_country_list"
+  },
+  "J*": {
+    "countries": [],
+    "label": "ATPA Exclusions",
+    "notes": "Exclusion specifics pending; treat as unresolved.",
+    "type": "dynamic_program"
+  },
+  "J+": {
+    "countries": [
+      "Bolivia",
+      "Colombia",
+      "Ecuador",
+      "Peru"
+    ],
+    "label": "Andean Trade Promotion and Drug Eradication Act (ATPDEA)",
+    "notes": "Matches ATPA coverage per provided guidance.",
+    "type": "static_country_list"
+  },
+  "JO": {
+    "countries": [
+      "Jordan"
+    ],
+    "label": "Jordan FTA",
+    "type": "static_country_list"
+  },
+  "K": {
+    "countries": [
+      "United States of America",
+      "Canada",
+      "France",
+      "Germany",
+      "Ireland",
+      "Italy",
+      "Latvia",
+      "Netherlands",
+      "Poland",
+      "Portugal",
+      "Spain",
+      "Sweden",
+      "Switzerland",
+      "United Kingdom",
+      "Japan"
+    ],
+    "label": "Pharmaceutical Agreement",
+    "notes": "Covers US, Canada, EU members (subset), Japan, Norway, Switzerland, UK.",
+    "type": "static_country_list"
+  },
+  "KR": {
+    "countries": [
+      "South Korea"
+    ],
+    "label": "Korea FTA",
+    "type": "static_country_list"
+  },
+  "L": {
+    "countries": [],
+    "label": "Uruguay Round Chemicals (Intermediate Dyes)",
+    "notes": "Country coverage not provided; treat as unresolved.",
+    "type": "dynamic_program"
+  },
+  "MA": {
+    "countries": [
+      "Morocco"
+    ],
+    "label": "Morocco FTA",
+    "type": "static_country_list"
+  },
+  "MX": {
+    "countries": [
+      "Mexico"
+    ],
+    "label": "NAFTA/USMCA (Mexico)",
+    "type": "static_country_list"
+  },
+  "NP": {
+    "countries": [
+      "Nepal"
+    ],
+    "label": "Nepal Special Rate",
+    "type": "static_country_list"
+  },
+  "OM": {
+    "countries": [
+      "Oman"
+    ],
+    "label": "Oman FTA",
+    "notes": "Requires Oman in risk dataset.",
+    "type": "static_country_list"
+  },
+  "P": {
+    "countries": [
+      "Costa Rica",
+      "El Salvador",
+      "Guatemala",
+      "Honduras",
+      "Nicaragua",
+      "Dominican Republic"
+    ],
+    "label": "CAFTA-DR",
+    "type": "static_country_list"
+  },
+  "P+": {
+    "countries": [],
+    "label": "CAFTA-DR Plus",
+    "notes": "Awaiting definitive country list.",
+    "type": "dynamic_program"
+  },
+  "PA": {
+    "countries": [
+      "Panama"
+    ],
+    "label": "Panama FTA",
+    "type": "static_country_list"
+  },
+  "PE": {
+    "countries": [
+      "Peru"
+    ],
+    "label": "Peru FTA",
+    "type": "static_country_list"
+  },
+  "R": {
+    "countries": [
+      "Haiti",
+      "Jamaica"
+    ],
+    "label": "Caribbean Basin Trade Partnership Act (CBTPA)",
+    "notes": "Subset present in risk dropdown only.",
+    "type": "static_country_list"
+  },
+  "S": {
+    "countries": [
+      "United States of America",
+      "Canada",
+      "Mexico"
+    ],
+    "label": "USMCA",
+    "type": "static_country_list"
+  },
+  "S+": {
+    "countries": [],
+    "label": "USMCA Plus",
+    "notes": "Awaiting details from trade team.",
+    "type": "dynamic_program"
+  },
+  "SG": {
+    "countries": [
+      "Singapore"
+    ],
+    "label": "Singapore FTA",
+    "notes": "Requires Singapore in risk dataset.",
+    "type": "static_country_list"
+  }
+}
