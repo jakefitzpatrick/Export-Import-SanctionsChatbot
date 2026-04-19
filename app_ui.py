@@ -43,7 +43,7 @@ HTS_COLUMNS = [
     "additional_duties",
 ]
 
-MAX_PRODUCT_OPTIONS = 1000
+MAX_PRODUCT_OPTIONS = None
 DEFAULT_COUNTRY_SELECTION = [
     "Cameroon",
     "Russia",
@@ -364,13 +364,18 @@ def get_db_connection(db_path: str) -> sqlite3.Connection:
 
 @st.cache_data(show_spinner=False)
 def load_product_options(_conn: sqlite3.Connection) -> list[tuple[str, str]]:
+    limit_clause = ""
+    params: tuple[int, ...] | None = None
+    if MAX_PRODUCT_OPTIONS is not None:
+        limit_clause = " LIMIT ?"
+        params = (MAX_PRODUCT_OPTIONS,)
     query = (
         'SELECT hts_code, description FROM hts '
         'WHERE hts_code IS NOT NULL AND hts_code <> "" '
-        'ORDER BY hts_code LIMIT ?'
+        f'ORDER BY hts_code{limit_clause}'
     )
     try:
-        df = pd.read_sql_query(query, _conn, params=(MAX_PRODUCT_OPTIONS,))
+        df = pd.read_sql_query(query, _conn, params=params)
     except Exception as exc:
         logger.warning("Failed to load product options: %s", exc)
         return []
