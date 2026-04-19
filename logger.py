@@ -1,7 +1,9 @@
+from __future__ import annotations
 """
 Centralized logging configuration for the chatbot system.
 Produces structured logs (JSON or plain) with console and optional file handlers.
 """
+
 import os
 import sys
 import logging
@@ -9,7 +11,7 @@ import logging
 from pythonjsonlogger import jsonlogger
 
 
-def setup_logger(name: str | None = None) -> logging.Logger:
+def setup_logger(name = None) -> logging.Logger:
     """
     Configure and return a logger instance.
     Reads LOG_LEVEL, LOG_FORMAT ('json' or 'text'), and optional LOG_FILE from environment.

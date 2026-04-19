@@ -1692,280 +1692,60 @@ NEWCODE,HTS_MASTER_CODE,COUNTRY,NEWRATE,NEWRATE_CLEAN,RATE_MODIFIER,ADDITIONAL_D
 9902.18.01,9617.00.40,Global,0,0.0,,,,,MTB,20
 9902.18.02,9617.00.40,Global,0,0.0,,,,,MTB,20
 9902.18.03,9620.00.50,Global,0,0.0,,,,,MTB,20
-9903.01.01,ALL,Mexico,Base Rate,,,0.25,,,Section 122,30
 9903.01.02,EXEMPT,Mexico,Base Rate,,,0.0,,,Section 122,50
 9903.01.03,EXEMPT,Mexico,Base Rate,,,0.0,,,Section 122,50
 9903.01.04,EXEMPT,Mexico,Base Rate,,,0.0,,,Section 122,50
 9903.01.05,2815.20.00,Mexico,Base Rate,,,0.1,,,Section 122,10
-9903.01.10,ALL,Canada,Base Rate,,,0.35,,,Section 122,30
 9903.01.11,EXEMPT,Canada,Base Rate,,,0.0,,,Section 122,50
 9903.01.12,EXEMPT,Canada,Base Rate,,,0.0,,,Section 122,50
 9903.01.13,SEE NOTE 2,Canada,Base Rate,,,0.1,,,Section 122,30
 9903.01.14,EXEMPT,Canada,Base Rate,,,0.0,,,Section 122,50
 9903.01.15,2815.20.00,Canada,Base Rate,,,0.1,,,Section 122,10
 9903.01.16,ALL,Canada,Base Rate,,,0.4,,,Transshipment-Evasion,30
-9903.01.20,ALL,China,Base Rate,,,0.1,,,Section 122,30
 9903.01.21,EXEMPT,China,Base Rate,,,0.0,,,Section 122,50
 9903.01.22,EXEMPT,China,Base Rate,,,0.0,,,Section 122,50
 9903.01.23,ALL,China,Base Rate,,,,,,Time-Limited Relief,30
-9903.01.24,ALL,China,Base Rate,,,0.1,,,Section 122,30
-9903.01.25,ALL,Global,Base Rate,,,0.1,,,Section 122,40
-9903.01.26,ALL,Canada,Base Rate,,,,,,Exclusion,30
-9903.01.27,ALL,Mexico,Base Rate,,,,,,Exclusion,30
-9903.01.28,ALL,Global,Base Rate,,,,,,In-Transit Relief,40
-9903.01.29,ALL,Global,Base Rate,,,,,,Exclusion,40
 9903.01.30,ALL,Global,Base Rate,,,,,,Donations-Suffering,40
 9903.01.31,ALL,Global,Base Rate,,,,,,Informational Materials,40
-9903.01.32,SEE NOTE 2,Global,Base Rate,,,,,,Specific Exclusions,40
-9903.01.43,ALL,Cameroon,Base Rate,,,0.11,,,Section 122,30
-9903.01.43,ALL,DR Congo,Base Rate,,,0.11,,,Section 122,30
-9903.01.44,ALL,Chad,Base Rate,,,0.13,,,Section 122,30
-9903.01.44,ALL,Equatorial Guinea,Base Rate,,,0.13,,,Section 122,30
-9903.01.45,ALL,Nigeria,Base Rate,,,0.14,,,Section 122,30
-9903.01.46,ALL,Norway,Base Rate,,,0.15,,,Section 122,30
-9903.01.46,ALL,Venezuela,Base Rate,,,0.15,,,Section 122,30
-9903.01.47,ALL,Mozambique,Base Rate,,,0.16,,,Section 122,30
-9903.01.48,ALL,Israel,Base Rate,,,0.17,,,Section 122,30
-9903.01.48,ALL,Malawi,Base Rate,,,0.17,,,Section 122,30
-9903.01.48,ALL,Philippines,Base Rate,,,0.17,,,Section 122,30
-9903.01.48,ALL,Zambia,Base Rate,,,0.17,,,Section 122,30
-9903.01.49,ALL,Nicaragua,Base Rate,,,0.18,,,Section 122,30
-9903.01.49,ALL,Zimbabwe,Base Rate,,,0.18,,,Section 122,30
-9903.01.50,ALL,Austria,Base Rate,,,0.2,,,Section 122,30
-9903.01.50,ALL,Belgium,Base Rate,,,0.2,,,Section 122,30
-9903.01.50,ALL,Bulgaria,Base Rate,,,0.2,,,Section 122,30
-9903.01.50,ALL,Croatia,Base Rate,,,0.2,,,Section 122,30
-9903.01.50,ALL,Cyprus,Base Rate,,,0.2,,,Section 122,30
-9903.01.50,ALL,Czech Republic,Base Rate,,,0.2,,,Section 122,30
-9903.01.50,ALL,Denmark,Base Rate,,,0.2,,,Section 122,30
-9903.01.50,ALL,Estonia,Base Rate,,,0.2,,,Section 122,30
-9903.01.50,ALL,Finland,Base Rate,,,0.2,,,Section 122,30
-9903.01.50,ALL,France,Base Rate,,,0.2,,,Section 122,30
-9903.01.50,ALL,Germany,Base Rate,,,0.2,,,Section 122,30
-9903.01.50,ALL,Greece,Base Rate,,,0.2,,,Section 122,30
-9903.01.50,ALL,Hungary,Base Rate,,,0.2,,,Section 122,30
-9903.01.50,ALL,Ireland,Base Rate,,,0.2,,,Section 122,30
-9903.01.50,ALL,Italy,Base Rate,,,0.2,,,Section 122,30
-9903.01.50,ALL,Jordan,Base Rate,,,0.2,,,Section 122,30
-9903.01.50,ALL,Latvia,Base Rate,,,0.2,,,Section 122,30
-9903.01.50,ALL,Lithuania,Base Rate,,,0.2,,,Section 122,30
-9903.01.50,ALL,Luxembourg,Base Rate,,,0.2,,,Section 122,30
-9903.01.50,ALL,Malta,Base Rate,,,0.2,,,Section 122,30
-9903.01.50,ALL,Netherlands,Base Rate,,,0.2,,,Section 122,30
-9903.01.50,ALL,Poland,Base Rate,,,0.2,,,Section 122,30
-9903.01.50,ALL,Portugal,Base Rate,,,0.2,,,Section 122,30
-9903.01.50,ALL,Romania,Base Rate,,,0.2,,,Section 122,30
-9903.01.50,ALL,Slovakia,Base Rate,,,0.2,,,Section 122,30
-9903.01.50,ALL,Slovenia,Base Rate,,,0.2,,,Section 122,30
-9903.01.50,ALL,Spain,Base Rate,,,0.2,,,Section 122,30
-9903.01.50,ALL,Sweden,Base Rate,,,0.2,,,Section 122,30
-9903.01.51,ALL,Cote d'Ivoire,Base Rate,,,0.21,,,Section 122,30
-9903.01.51,ALL,Namibia,Base Rate,,,0.21,,,Section 122,30
-9903.01.52,ALL,Vanuatu,Base Rate,,,0.22,,,Section 122,30
-9903.01.53,ALL,Brunei,Base Rate,,,0.24,,,Section 122,30
-9903.01.53,ALL,Japan,Base Rate,,,0.24,,,Section 122,30
-9903.01.53,ALL,Malaysia,Base Rate,,,0.24,,,Section 122,30
-9903.01.54,ALL,South Korea,Base Rate,,,0.25,,,Section 122,30
-9903.01.55,ALL,India,Base Rate,,,0.26,,,Section 122,30
-9903.01.56,ALL,Kazakhstan,Base Rate,,,0.27,,,Section 122,30
-9903.01.57,ALL,Tunisia,Base Rate,,,0.28,,,Section 122,30
-9903.01.58,ALL,Pakistan,Base Rate,,,0.29,,,Section 122,30
-9903.01.59,ALL,Algeria,Base Rate,,,0.3,,,Section 122,30
-9903.01.59,ALL,Nauru,Base Rate,,,0.3,,,Section 122,30
-9903.01.59,ALL,South Africa,Base Rate,,,0.3,,,Section 122,30
-9903.01.60,ALL,Libya,Base Rate,,,0.31,,,Section 122,30
-9903.01.60,ALL,Moldova,Base Rate,,,0.31,,,Section 122,30
-9903.01.60,ALL,Switzerland,Base Rate,,,0.31,,,Section 122,30
-9903.01.61,ALL,Angola,Base Rate,,,0.32,,,Section 122,30
-9903.01.61,ALL,Fiji,Base Rate,,,0.32,,,Section 122,30
-9903.01.61,ALL,Indonesia,Base Rate,,,0.32,,,Section 122,30
-9903.01.61,ALL,Taiwan,Base Rate,,,0.32,,,Section 122,30
-9903.01.62,ALL,North Macedonia,Base Rate,,,0.33,,,Section 122,30
-9903.01.63,ALL,China,Base Rate,,,0.34,,,Section 122,30
-9903.01.63,ALL,Hong Kong,Base Rate,,,0.34,,,Section 122,30
-9903.01.63,ALL,Macau,Base Rate,,,0.34,,,Section 122,30
-9903.01.64,ALL,Bosnia and Herzegovina,Base Rate,,,0.35,,,Section 122,30
-9903.01.65,ALL,Thailand,Base Rate,,,0.36,,,Section 122,30
-9903.01.66,ALL,Bangladesh,Base Rate,,,0.37,,,Section 122,30
-9903.01.66,ALL,Botswana,Base Rate,,,0.37,,,Section 122,30
-9903.01.66,ALL,Liechtenstein,Base Rate,,,0.37,,,Section 122,30
-9903.01.66,ALL,Serbia,Base Rate,,,0.37,,,Section 122,30
-9903.01.67,ALL,Guyana,Base Rate,,,0.38,,,Section 122,30
-9903.01.68,ALL,Iraq,Base Rate,,,0.39,,,Section 122,30
-9903.01.69,ALL,Mauritius,Base Rate,,,0.4,,,Section 122,30
-9903.01.70,ALL,Falkland Islands,Base Rate,,,0.41,,,Section 122,30
-9903.01.70,ALL,Syria,Base Rate,,,0.41,,,Section 122,30
-9903.01.71,ALL,Myanmar,Base Rate,,,0.44,,,Section 122,30
-9903.01.71,ALL,Sri Lanka,Base Rate,,,0.44,,,Section 122,30
-9903.01.72,ALL,Vietnam,Base Rate,,,0.46,,,Section 122,30
-9903.01.73,ALL,Madagascar,Base Rate,,,0.47,,,Section 122,30
-9903.01.74,ALL,Laos,Base Rate,,,0.48,,,Section 122,30
-9903.01.75,ALL,Cambodia,Base Rate,,,0.49,,,Section 122,30
-9903.01.76,ALL,Lesotho,Base Rate,,,0.5,,,Section 122,30
-9903.01.77,ALL,Brazil,Base Rate,,,0.4,,,Section 122,30
-9903.01.78,ALL,Brazil,Base Rate,,,,,,Exclusion,30
-9903.01.79,ALL,Brazil,Base Rate,,,,,,Exclusion,30
-9903.01.80,ALL,Brazil,Base Rate,,,,,,Exclusion,30
-9903.01.81,SEE NOTE 2,Brazil,Base Rate,,,,,,Exclusion,30
-9903.01.82,SEE NOTE 2,Brazil,Base Rate,,,,,,Exclusion,30
-9903.01.83,SEE NOTE 2,Brazil,Base Rate,,,,,,Exclusion,30
-9903.01.84,ALL,India,Base Rate,,,0.25,,,Section 122,30
-9903.01.85,ALL,India,Base Rate,,,,,,In-Transit,30
-9903.01.86,SEE NOTE 2,India,Base Rate,,,,,,Exclusion,30
-9903.01.87,SEE NOTE 2,India,Base Rate,,,,,,Exclusion,30
-9903.01.88,SEE NOTE 2,India,Base Rate,,,,,,Exclusion,30
-9903.01.89,ALL,India,Base Rate,,,,,,Exclusion,30
-9903.01.90,SEE NOTE 2,Brazil,Base Rate,,,,,,Exclusion,30
-9903.02.02,ALL,Afghanistan,Base Rate,,,0.15,,,Section 122,30
-9903.02.03,ALL,Algeria,Base Rate,,,0.3,,,Section 122,30
-9903.02.04,ALL,Angola,Base Rate,,,0.15,,,Section 122,30
-9903.02.05,ALL,Bangladesh,Base Rate,,,0.2,,,Section 122,30
-9903.02.06,ALL,Bolivia,Base Rate,,,0.15,,,Section 122,30
-9903.02.07,ALL,Bosnia and Herzegovina,Base Rate,,,0.3,,,Section 122,30
-9903.02.08,ALL,Botswana,Base Rate,,,0.15,,,Section 122,30
-9903.02.09,ALL,Brazil,Base Rate,,,0.1,,,Section 122,30
-9903.02.10,ALL,Brunei,Base Rate,,,0.25,,,Section 122,30
-9903.02.11,ALL,Cambodia,Base Rate,,,0.19,,,Section 122,30
-9903.02.12,ALL,Cameroon,Base Rate,,,0.15,,,Section 122,30
-9903.02.13,ALL,Chad,Base Rate,,,0.15,,,Section 122,30
-9903.02.14,ALL,Costa Rica,Base Rate,,,0.15,,,Section 122,30
-9903.02.15,ALL,Cote d'Ivoire,Base Rate,,,0.15,,,Section 122,30
-9903.02.16,ALL,DR Congo,Base Rate,,,0.15,,,Section 122,30
-9903.02.17,ALL,Ecuador,Base Rate,,,0.15,,,Section 122,30
-9903.02.18,ALL,Equatorial Guinea,Base Rate,,,0.15,,,Section 122,30
-9903.02.19,ALL,Austria,0,0.0,,,,,Section 122,30
-9903.02.19,ALL,Belgium,0,0.0,,,,,Section 122,30
-9903.02.19,ALL,Bulgaria,0,0.0,,,,,Section 122,30
-9903.02.19,ALL,Croatia,0,0.0,,,,,Section 122,30
-9903.02.19,ALL,Cyprus,0,0.0,,,,,Section 122,30
-9903.02.19,ALL,Czech Republic,0,0.0,,,,,Section 122,30
-9903.02.19,ALL,Denmark,0,0.0,,,,,Section 122,30
-9903.02.19,ALL,Estonia,0,0.0,,,,,Section 122,30
-9903.02.19,ALL,Finland,0,0.0,,,,,Section 122,30
-9903.02.19,ALL,France,0,0.0,,,,,Section 122,30
-9903.02.19,ALL,Germany,0,0.0,,,,,Section 122,30
-9903.02.19,ALL,Greece,0,0.0,,,,,Section 122,30
-9903.02.19,ALL,Hungary,0,0.0,,,,,Section 122,30
-9903.02.19,ALL,Ireland,0,0.0,,,,,Section 122,30
-9903.02.19,ALL,Italy,0,0.0,,,,,Section 122,30
-9903.02.19,ALL,Latvia,0,0.0,,,,,Section 122,30
-9903.02.19,ALL,Lithuania,0,0.0,,,,,Section 122,30
-9903.02.19,ALL,Luxembourg,0,0.0,,,,,Section 122,30
-9903.02.19,ALL,Malta,0,0.0,,,,,Section 122,30
-9903.02.19,ALL,Netherlands,0,0.0,,,,,Section 122,30
-9903.02.19,ALL,Poland,0,0.0,,,,,Section 122,30
-9903.02.19,ALL,Portugal,0,0.0,,,,,Section 122,30
-9903.02.19,ALL,Romania,0,0.0,,,,,Section 122,30
-9903.02.19,ALL,Slovakia,0,0.0,,,,,Section 122,30
-9903.02.19,ALL,Slovenia,0,0.0,,,,,Section 122,30
-9903.02.19,ALL,Spain,0,0.0,,,,,Section 122,30
-9903.02.19,ALL,Sweden,0,0.0,,,,,Section 122,30
-9903.02.20,ALL,Austria,0.15,0.15,,,,,Section 122,30
-9903.02.20,ALL,Belgium,0.15,0.15,,,,,Section 122,30
-9903.02.20,ALL,Bulgaria,0.15,0.15,,,,,Section 122,30
-9903.02.20,ALL,Croatia,0.15,0.15,,,,,Section 122,30
-9903.02.20,ALL,Cyprus,0.15,0.15,,,,,Section 122,30
-9903.02.20,ALL,Czech Republic,0.15,0.15,,,,,Section 122,30
-9903.02.20,ALL,Denmark,0.15,0.15,,,,,Section 122,30
-9903.02.20,ALL,Estonia,0.15,0.15,,,,,Section 122,30
-9903.02.20,ALL,Finland,0.15,0.15,,,,,Section 122,30
-9903.02.20,ALL,France,0.15,0.15,,,,,Section 122,30
-9903.02.20,ALL,Germany,0.15,0.15,,,,,Section 122,30
-9903.02.20,ALL,Greece,0.15,0.15,,,,,Section 122,30
-9903.02.20,ALL,Hungary,0.15,0.15,,,,,Section 122,30
-9903.02.20,ALL,Ireland,0.15,0.15,,,,,Section 122,30
-9903.02.20,ALL,Italy,0.15,0.15,,,,,Section 122,30
-9903.02.20,ALL,Latvia,0.15,0.15,,,,,Section 122,30
-9903.02.20,ALL,Lithuania,0.15,0.15,,,,,Section 122,30
-9903.02.20,ALL,Luxembourg,0.15,0.15,,,,,Section 122,30
-9903.02.20,ALL,Malta,0.15,0.15,,,,,Section 122,30
-9903.02.20,ALL,Netherlands,0.15,0.15,,,,,Section 122,30
-9903.02.20,ALL,Poland,0.15,0.15,,,,,Section 122,30
-9903.02.20,ALL,Portugal,0.15,0.15,,,,,Section 122,30
-9903.02.20,ALL,Romania,0.15,0.15,,,,,Section 122,30
-9903.02.20,ALL,Slovakia,0.15,0.15,,,,,Section 122,30
-9903.02.20,ALL,Slovenia,0.15,0.15,,,,,Section 122,30
-9903.02.20,ALL,Spain,0.15,0.15,,,,,Section 122,30
-9903.02.20,ALL,Sweden,0.15,0.15,,,,,Section 122,30
-9903.02.21,ALL,Falkland Islands,Base Rate,,,0.1,,,Section 122,30
-9903.02.22,ALL,Fiji,Base Rate,,,0.15,,,Section 122,30
-9903.02.23,ALL,Ghana,Base Rate,,,0.15,,,Section 122,30
-9903.02.24,ALL,Guyana,Base Rate,,,0.15,,,Section 122,30
-9903.02.25,ALL,Iceland,Base Rate,,,0.15,,,Section 122,30
-9903.02.26,ALL,India,Base Rate,,,0.25,,,Section 122,30
-9903.02.27,ALL,Indonesia,Base Rate,,,0.19,,,Section 122,30
-9903.02.28,ALL,Iraq,Base Rate,,,0.35,,,Section 122,30
-9903.02.29,ALL,Israel,Base Rate,,,0.15,,,Section 122,30
-9903.02.30,ALL,Japan,Base Rate,,,0.15,,,Section 122,30
-9903.02.31,ALL,Jordan,Base Rate,,,0.15,,,Section 122,30
-9903.02.32,ALL,Kazakhstan,Base Rate,,,0.25,,,Section 122,30
-9903.02.33,ALL,Laos,Base Rate,,,0.4,,,Section 122,30
-9903.02.34,ALL,Lesotho,Base Rate,,,0.15,,,Section 122,30
-9903.02.35,ALL,Libya,Base Rate,,,0.3,,,Section 122,30
-9903.02.36,ALL,Liechtenstein,Base Rate,,,0.15,,,Section 122,30
-9903.02.37,ALL,Madagascar,Base Rate,,,0.15,,,Section 122,30
-9903.02.38,ALL,Malawi,Base Rate,,,0.15,,,Section 122,30
-9903.02.39,ALL,Malaysia,Base Rate,,,0.19,,,Section 122,30
-9903.02.40,ALL,Mauritius,Base Rate,,,0.15,,,Section 122,30
-9903.02.41,ALL,Moldova,Base Rate,,,0.25,,,Section 122,30
-9903.02.42,ALL,Mozambique,Base Rate,,,0.15,,,Section 122,30
-9903.02.43,ALL,Myanmar,Base Rate,,,0.4,,,Section 122,30
-9903.02.44,ALL,Namibia,Base Rate,,,0.15,,,Section 122,30
-9903.02.45,ALL,Nauru,Base Rate,,,0.15,,,Section 122,30
-9903.02.46,ALL,New Zealand,Base Rate,,,0.15,,,Section 122,30
-9903.02.47,ALL,Nicaragua,Base Rate,,,0.18,,,Section 122,30
-9903.02.48,ALL,Nigeria,Base Rate,,,0.15,,,Section 122,30
-9903.02.49,ALL,North Macedonia,Base Rate,,,0.15,,,Section 122,30
-9903.02.50,ALL,Norway,Base Rate,,,0.15,,,Section 122,30
-9903.02.51,ALL,Pakistan,Base Rate,,,1.9,,,Section 122,30
-9903.02.52,ALL,Papua New Guinea,Base Rate,,,0.15,,,Section 122,30
-9903.02.53,ALL,Philippines,Base Rate,,,0.19,,,Section 122,30
-9903.02.54,ALL,Serbia,Base Rate,,,0.35,,,Section 122,30
-9903.02.55,ALL,South Africa,Base Rate,,,0.3,,,Section 122,30
-9903.02.57,ALL,Sri Lanka,Base Rate,,,0.2,,,Section 122,30
-9903.02.59,ALL,Syria,Base Rate,,,0.41,,,Section 122,30
-9903.02.60,ALL,Taiwan,Base Rate,,,0.2,,,Section 122,30
-9903.02.61,ALL,Thailand,Base Rate,,,0.19,,,Section 122,30
-9903.02.62,ALL,Trinidad and Tobago,Base Rate,,,0.15,,,Section 122,30
-9903.02.63,ALL,Tunisia,Base Rate,,,0.25,,,Section 122,30
-9903.02.64,ALL,Turkey,Base Rate,,,0.15,,,Section 122,30
-9903.02.65,ALL,Uganda,Base Rate,,,0.15,,,Section 122,30
-9903.02.66,ALL,United Kingdom,Base Rate,,,0.1,,,Section 122,30
-9903.02.67,ALL,Vanuatu,Base Rate,,,0.15,,,Section 122,30
-9903.02.68,ALL,Venezuela,Base Rate,,,0.15,,,Section 122,30
-9903.02.69,ALL,Vietnam,Base Rate,,,0.2,,,Section 122,30
-9903.02.70,ALL,Zambia,Base Rate,,,0.15,,,Section 122,30
-9903.02.71,ALL,Zimbabwe,Base Rate,,,0.15,,,Section 122,30
-9903.02.72,ALL,Japan,Base Rate,,,,,,Section 122,30
+9903.02.20,ALL,Austria,15.0,15.0,Floor,,,,Section 122,30
+9903.02.20,ALL,Belgium,15.0,15.0,Floor,,,,Section 122,30
+9903.02.20,ALL,Bulgaria,15.0,15.0,Floor,,,,Section 122,30
+9903.02.20,ALL,Croatia,15.0,15.0,Floor,,,,Section 122,30
+9903.02.20,ALL,Cyprus,15.0,15.0,Floor,,,,Section 122,30
+9903.02.20,ALL,Czech Republic,15.0,15.0,Floor,,,,Section 122,30
+9903.02.20,ALL,Denmark,15.0,15.0,Floor,,,,Section 122,30
+9903.02.20,ALL,Estonia,15.0,15.0,Floor,,,,Section 122,30
+9903.02.20,ALL,Finland,15.0,15.0,Floor,,,,Section 122,30
+9903.02.20,ALL,France,15.0,15.0,Floor,,,,Section 122,30
+9903.02.20,ALL,Germany,15.0,15.0,Floor,,,,Section 122,30
+9903.02.20,ALL,Greece,15.0,15.0,Floor,,,,Section 122,30
+9903.02.20,ALL,Hungary,15.0,15.0,Floor,,,,Section 122,30
+9903.02.20,ALL,Ireland,15.0,15.0,Floor,,,,Section 122,30
+9903.02.20,ALL,Italy,15.0,15.0,Floor,,,,Section 122,30
+9903.02.20,ALL,Latvia,15.0,15.0,Floor,,,,Section 122,30
+9903.02.20,ALL,Lithuania,15.0,15.0,Floor,,,,Section 122,30
+9903.02.20,ALL,Luxembourg,15.0,15.0,Floor,,,,Section 122,30
+9903.02.20,ALL,Malta,15.0,15.0,Floor,,,,Section 122,30
+9903.02.20,ALL,Netherlands,15.0,15.0,Floor,,,,Section 122,30
+9903.02.20,ALL,Poland,15.0,15.0,Floor,,,,Section 122,30
+9903.02.20,ALL,Portugal,15.0,15.0,Floor,,,,Section 122,30
+9903.02.20,ALL,Romania,15.0,15.0,Floor,,,,Section 122,30
+9903.02.20,ALL,Slovakia,15.0,15.0,Floor,,,,Section 122,30
+9903.02.20,ALL,Slovenia,15.0,15.0,Floor,,,,Section 122,30
+9903.02.20,ALL,Spain,15.0,15.0,Floor,,,,Section 122,30
+9903.02.20,ALL,Sweden,15.0,15.0,Floor,,,,Section 122,30
 9903.02.73,ALL,Japan,15 (Floor),15.0,Floor,,,,Section 122,30
-9903.02.78,SEE NOTE 2,Global,Base Rate,,,,,,Exclusion,40
-9903.02.79,SEE NOTE 2,South Korea,Base Rate,,,,,,Exclusion,30
 9903.02.80,SEE NOTE 2,South Korea,15 (Floor),15.0,Floor,,,,Section 122,30
-9903.02.81,SEE NOTE 2,South Korea,Base Rate,,,,,,Exclusion,30
-9903.02.82,SEE NOTE 2,Switzerland,Base Rate,,,,,,Exclusion,30
 9903.02.83,SEE NOTE 2,Switzerland,15 (Floor),15.0,Floor,,,,Section 122,30
-9903.02.84,SEE NOTE 2,Switzerland,Base Rate,,,,,,Exclusion,30
-9903.02.85,SEE NOTE 2,Switzerland,Base Rate,,,,,,Exclusion,30
-9903.02.86,SEE NOTE 2,Switzerland,Base Rate,,,,,,Exclusion,30
-9903.02.87,SEE NOTE 2,Liechtenstein,Base Rate,,,,,,Exclusion,30
 9903.02.88,SEE NOTE 2,Liechtenstein,15 (Floor),15.0,Floor,,,,Section 122,30
-9903.02.89,SEE NOTE 2,Liechtenstein,Base Rate,,,,,,Exclusion,30
-9903.02.90,SEE NOTE 2,Liechtenstein,Base Rate,,,,,,Exclusion,30
-9903.02.91,SEE NOTE 2,Liechtenstein,Base Rate,,,,,,Exclusion,30
-9903.03.01,ALL,Global,0.1,0.1,,,,,Section 122,40
-9903.03.02,ALL,Global,Base Rate,,,,,,Section 122,40
+9903.01.49,ALL,Nicaragua,Base Rate,,,0.18,,,Section 122,30
+9903.02.14,ALL,Costa Rica,Base Rate,,,0.15,,,Section 122,30
+9903.02.47,ALL,Nicaragua,Base Rate,,,0.18,,,Section 122,30
+9903.03.01,ALL,Global,10.0,10.0,Floor,,,,Section 122,40
 9903.03.03,SEE NOTE 2,Global,Base Rate,,,,,,Section 122,40
 9903.03.04,SEE NOTE 2,Global,Base Rate,,,,,,Section 122,40
 9903.03.05,SEE NOTE 2,Global,Base Rate,,,,,,Section 122,40
 9903.03.06,SEE NOTE 2,Global,Base Rate,,,,,,Section 122,40
-9903.03.07,ALL,Canada,Base Rate,,,,,,Section 122,30
-9903.03.08,ALL,Mexico,Base Rate,,,,,,Section 122,30
-9903.03.09,ALL,Costa Rica,Base Rate,,,,,,Section 122,30
-9903.03.09,ALL,Dominican Republic,Base Rate,,,,,,Section 122,30
-9903.03.09,ALL,El Salvador,Base Rate,,,,,,Section 122,30
-9903.03.09,ALL,Guatemala,Base Rate,,,,,,Section 122,30
-9903.03.09,ALL,Honduras,Base Rate,,,,,,Section 122,30
-9903.03.09,ALL,Nicaragua,Base Rate,,,,,,Section 122,30
 9903.04.05,0406.40.44,Austria,Base Rate,,,2.0,,,Trade Dispute,10
 9903.04.05,0406.40.44,Belgium,Base Rate,,,2.0,,,Trade Dispute,10
 9903.04.05,0406.40.44,Bulgaria,Base Rate,,,2.0,,,Trade Dispute,10
@@ -6035,23 +5815,12 @@ NEWCODE,HTS_MASTER_CODE,COUNTRY,NEWRATE,NEWRATE_CLEAN,RATE_MODIFIER,ADDITIONAL_D
 9903.89.55,8214.90.60,Slovenia,,,,0.25,,,LCA Trade Dispute,10
 9903.89.55,8214.90.60,Spain,,,,0.25,,,LCA Trade Dispute,10
 9903.89.55,8214.90.60,Sweden,,,,0.25,,,LCA Trade Dispute,10
-9903.89.59,2208.20.40,France,Base Rate,,,,,,LCA Exclusion,10
-9903.89.59,2208.20.40,Germany,Base Rate,,,,,,LCA Exclusion,10
 9903.89.61,8803.30.00,France,Base Rate,,,0.15,,,LCA Trade Dispute,10
 9903.89.61,8803.30.00,Germany,Base Rate,,,0.15,,,LCA Trade Dispute,10
-9903.89.63,8803.30.00,France,Base Rate,,,,,,LCA Exclusion,10
-9903.89.63,8803.30.00,Germany,Base Rate,,,,,,LCA Exclusion,10
-9903.91.09,8426.19.00,China,Base Rate,,,,,,Section 301 Exclusion,10
-9903.91.10,9018.31.00.80,China,Base Rate,,,,,,Section 301 Exclusion,10
 9903.91.12,8716.39.00.90,China,Base Rate,,,1.0,,,Section 301 Strategic,10
 9903.91.12,8716.90.30,China,Base Rate,,,1.0,,,Section 301 Strategic,10
 9903.91.12,8716.90.50,China,Base Rate,,,1.0,,,Section 301 Strategic,10
-9903.91.13,8716.39.00.90,China,Base Rate,,,,,,Section 301 Exclusion,10
-9903.91.13,8716.90.30,China,Base Rate,,,,,,Section 301 Exclusion,10
-9903.91.13,8716.90.50,China,Base Rate,,,,,,Section 301 Exclusion,10
 9903.91.14,8426.19.00,China,Base Rate,,,1.0,,,Section 301 Strategic,10
-9903.91.15,8426.19.00,China,Base Rate,,,,,,Section 301 Exclusion,10
-9903.91.16,8426.19.00,China,Base Rate,,,,,,Section 301 Exclusion,10
 9903.92.10,8426.19.00,China,Base Rate,,,0.25,,,Section 301 Strategic,10
 9904.02.01,0201.10.50,Global,Base Rate,,,,0.666,cents/kg,Beef Safeguard (Value),20
 9904.02.01,0201.20.80,Global,Base Rate,,,,0.666,cents/kg,Beef Safeguard (Value),20
@@ -7029,3 +6798,5 @@ NEWCODE,HTS_MASTER_CODE,COUNTRY,NEWRATE,NEWRATE_CLEAN,RATE_MODIFIER,ADDITIONAL_D
 9922.52.11,5203.00.30,Mexico,0,0.0,,,,,USMCA,10
 9922.52.11,5203.00.30,United States,0,0.0,,,,,USMCA,10
 9922.52.12,5203.00.30,Canada,Base Rate,,,,0.052,cents/kg,USMCA,10
+BLOCKER,ALL,Mexico,0.0,0.0,Floor,,,,USMCA Blocker,30
+BLOCKER,ALL,Canada,0.0,0.0,Floor,,,,USMCA Blocker,30
