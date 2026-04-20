@@ -312,7 +312,12 @@ def run_sql_chat_flow(
     return assistant_text, metadata
 
 
-def answer_question(question: str, deployment_id: str, conn: sqlite3.Connection) -> tuple[str, dict]:
+def answer_question(
+    question: str,
+    deployment_id: str,
+    conn: sqlite3.Connection,
+    stream_placeholder=None,
+) -> tuple[str, dict]:
     special = _maybe_handle_program_command(question)
     if special:
         return special
@@ -324,16 +329,24 @@ def answer_question(question: str, deployment_id: str, conn: sqlite3.Connection)
         extra={"question": question, "mode": mode},
     )
     if mode == "context":
-        return answer_question_with_context(normalized_question, deployment_id, context)
+        return answer_question_with_context(
+            normalized_question, deployment_id, context, stream_placeholder
+        )
     return run_sql_chat_flow(normalized_question, deployment_id, conn, context)
 
 
-def answer_question_with_context(question: str, deployment_id: str, context: dict) -> tuple[str, dict]:
-    """Use the LLM to answer a question based on existing results only."""
+def answer_question_with_context(
+    question: str,
+    deployment_id: str,
+    context: dict,
+    stream_placeholder=None,
+) -> tuple[str, dict]:
+    """Use the LLM to answer a question based on existing results only.
+
+    If stream_placeholder is provided (a Streamlit empty()), tokens are written
+    incrementally so the UI updates as the response arrives.
+    """
     analysis = context.get("latest_analysis") or {}
-    tariff_breakdown = analysis.get("tariff_breakdown") or []
-    risk_snapshot = analysis.get("risk_snapshot") or []
-    ch99_summary = analysis.get("ch99_summary") or {}
     selections = analysis.get("selections") or {}
     summary = analysis.get("summary") or ""
 
@@ -364,17 +377,32 @@ def answer_question_with_context(question: str, deployment_id: str, context: dic
         extra={"question": question, "has_analysis": context.get("latest_analysis") is not None},
     )
     start = time.perf_counter()
-    response = openai.chat.completions.create(
+    stream = openai.chat.completions.create(
         model=deployment_id,
         messages=[
             {"role": "system", "content": QA_SYSTEM_PROMPT},
             {"role": "user", "content": user_message},
         ],
+        stream=True,
     )
-    content = response.choices[0].message.content or ""
+    full_text = ""
+    for chunk in stream:
+        delta = chunk.choices[0].delta.content if chunk.choices and chunk.choices[0].delta else None
+        if not delta:
+            continue
+        full_text += delta
+        if stream_placeholder is not None:
+            stream_placeholder.markdown(
+                f"<div class='bubble-label'>Assistant</div>"
+                f"<div class='bubble-bot'>{full_text}▌</div>",
+                unsafe_allow_html=True,
+            )
+    if stream_placeholder is not None:
+        stream_placeholder.empty()
+
     duration_ms = round((time.perf_counter() - start) * 1000, 1)
     logger.info(
         "Contextual answer generated",
-        extra={"duration_ms": duration_ms, "chars": len(content)},
+        extra={"duration_ms": duration_ms, "chars": len(full_text)},
     )
-    return content.strip(), {"mode": "context"}
+    return full_text.strip(), {"mode": "context"}

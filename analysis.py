@@ -11,6 +11,7 @@ import json
 import logging
 import math
 import sqlite3
+import time
 from datetime import datetime
 import uuid
 from collections import Counter
@@ -175,8 +176,9 @@ def _resolve_general_duty_rate(
     return cache[code]
 
 
+@st.cache_data(show_spinner=False, ttl=300)
 def fetch_ch99_for_codes_and_countries(
-    conn: sqlite3.Connection,
+    _conn: sqlite3.Connection,
     selected_codes: list[str],
     selected_countries: list[str],
 ) -> pd.DataFrame:
@@ -190,7 +192,7 @@ def fetch_ch99_for_codes_and_countries(
         return pd.DataFrame()
 
     try:
-        cur = conn.cursor()
+        cur = _conn.cursor()
         cur.execute("SELECT 1 FROM chapter_99 LIMIT 1")
     except sqlite3.Error as exc:
         logger.warning("Chapter 99 table missing; skipping overrides", exc_info=exc)
@@ -226,7 +228,7 @@ def fetch_ch99_for_codes_and_countries(
           AND (c.COUNTRY IN ({country_ph}) OR c.COUNTRY = 'Global')
     """
     params = selected_codes + selected_countries
-    df = pd.read_sql_query(query, conn, params=params)
+    df = pd.read_sql_query(query, _conn, params=params)
     return df
 
 
@@ -531,8 +533,9 @@ def _summarize_specific_effects(df: pd.DataFrame) -> str | None:
     return "Ch.99 specific surcharges now fix the per-unit rates at " + "; ".join(bits) + "."
 
 
+@st.cache_data(show_spinner=False, ttl=300)
 def fetch_tariffs_for_codes(
-    conn,
+    _conn,
     selected_codes: list[str],
 ) -> pd.DataFrame:
     """Load and parse general duty rates for the selected HTS codes."""
@@ -545,7 +548,7 @@ def fetch_tariffs_for_codes(
         "FROM hts WHERE hts_code IN (" + placeholders + ")"
     )
     logger.info("Fetching tariff rows for selected products", extra={"product_count": len(selected_codes)})
-    df = pd.read_sql_query(query, conn, params=selected_codes)
+    df = pd.read_sql_query(query, _conn, params=selected_codes)
     if df.empty:
         logger.warning("Tariff lookup returned no rows for selected products")
         return df
@@ -557,7 +560,7 @@ def fetch_tariffs_for_codes(
     missing_mask = df["general_duty_rate_text"].str.strip() == ""
     if missing_mask.any():
         for idx, row in df[missing_mask].iterrows():
-            fallback, source = _resolve_general_duty_rate(conn, row["hts_code"], inheritance_cache)
+            fallback, source = _resolve_general_duty_rate(_conn, row["hts_code"], inheritance_cache)
             if fallback:
                 df.at[idx, "general_duty_rate_text"] = fallback
                 df.at[idx, "general_duty_rate_source_code"] = source or row["hts_code"]
@@ -680,6 +683,13 @@ def build_correlation_dataframe(
     country_records = country_subset.to_dict("records")
     product_records = tariff_df.to_dict("records")
 
+    # Pre-index ch99_df by (hts_code, country) so _best_ch99_rule doesn't
+    # re-filter the full DataFrame on every (country, product) pair.
+    ch99_index: dict[tuple[str, str], pd.DataFrame] = {}
+    if ch99_available and ch99_df is not None:
+        for (hts_code, country), grp in ch99_df.groupby(["hts_code", "ch99_country"], sort=False):
+            ch99_index[(str(hts_code), str(country))] = grp
+
     combined_rows: list[dict] = []
     special_override_count = 0
     unresolved_codes: set[str] = set()
@@ -757,7 +767,21 @@ def build_correlation_dataframe(
             if base_has_ad_valorem:
                 ch99_summary["n_total"] += 1
 
-            rule = _best_ch99_rule(ch99_df, product_meta["hts_code"], country_name) if ch99_available else None
+            if ch99_available:
+                hts_key = product_meta["hts_code"]
+                specific_slice = ch99_index.get((hts_key, country_name))
+                global_slice = ch99_index.get((hts_key, "Global"))
+                if specific_slice is not None and global_slice is not None:
+                    pair_df = pd.concat([specific_slice, global_slice], ignore_index=True)
+                elif specific_slice is not None:
+                    pair_df = specific_slice
+                elif global_slice is not None:
+                    pair_df = global_slice
+                else:
+                    pair_df = pd.DataFrame()
+                rule = _best_ch99_rule(pair_df, hts_key, country_name) if not pair_df.empty else None
+            else:
+                rule = None
             if rule is not None and base_has_ad_valorem:
                 adjusted_rate = apply_ch99_to_duty(base_duty_rate_obj, rule)
                 if adjusted_rate is not None:
@@ -1104,6 +1128,14 @@ def _derive_headline(
     )
 
 
+_ANALYSIS_KEEP_COLS = [
+    "country", "hts_code", "product_description",
+    "risk_score", "risk_level",
+    "ad_valorem_rate", "general_duty_rate_text",
+    "ch99_delta", "ch99_tradeprogram", "rate_source",
+]
+
+
 def stream_analysis_to_placeholder(
     df: pd.DataFrame,
     deployment_id: str,
@@ -1111,51 +1143,25 @@ def stream_analysis_to_placeholder(
     headline: str | None = None,
 ) -> str:
     """LLM-generated narrative summary of the correlation DataFrame."""
-    subset = df.head(SUMMARY_SAMPLE_LIMIT)
-    stats = _build_summary_stats(df)
-    payload = {
-        "stats": stats,
-        "sample_rows": subset.to_dict("records"),
-    }
-    headline_note = ""
-    if headline:
-        headline_note = (
-            f"The user already saw this headline: \"{headline}\". "
-            "Do not restate it verbatim or contradict it; elaborate with supporting context instead."
-        )
+    keep = [c for c in _ANALYSIS_KEEP_COLS if c in df.columns]
+    payload = df[keep].head(SUMMARY_SAMPLE_LIMIT).to_dict("records")
 
     messages = [
         {
             "role": "system",
             "content": (
-                "You are a trade intelligence assistant with the mindset of a "
-                "pragmatic trade manager. You help users understand tariff exposure "
-                "and country risk for specific HTS codes.\n\n"
-                "Your goals:\n"
-                "- Give a medium-length answer: a short paragraph plus 1–3 concise, "
-                "practical suggestions.\n"
-                "- Highlight notable patterns — e.g. countries where duty and risk "
-                "diverge, or where a trade program drives the effective rate.\n"
-                "- Keep recommendations business-focused and specific to the countries "
-                "and HTS codes in view.\n\n"
-                "Constraints:\n"
-                "- Speak as a knowledgeable trade advisor, not as someone analyzing a "
-                "dataset or inspecting rows. Never reference 'the data', 'the dataset', "
-                "'sample rows', 'sample size', 'supplied data', or 'the provided rows'.\n"
-                "- Do not invent numbers or countries beyond what you have been given.\n"
-                "- This is not legal advice; if your answer could be interpreted that "
-                "way, remind the user to consult their customs or trade counsel.\n"
+                "You are a trade advisor. Given tariff and country-risk data, "
+                "write one short paragraph summarising the key pattern, then "
+                "give 1–3 concise, actionable business suggestions. "
+                "Speak directly — no dataset/row references, no legal advice disclaimer unless the answer could be misread as legal guidance."
             ),
         },
         {
             "role": "user",
             "content": (
-                "Summarize the relationship between country risk and ad valorem duty rates "
-                "for the countries and HTS code(s) below. Highlight any extremes or "
-                "interesting patterns, then give 1–3 actionable, business-focused "
-                "suggestions. Speak as a trade advisor — do not reference datasets, rows, "
-                "or sample sizes.\n\n"
-                f"{headline_note}\n\n"
+                "Summarise the duty exposure and risk profile for the selections below. "
+                "Explain why rates differ across countries if they do, and name any "
+                "trade program driving a surcharge.\n\n"
                 f"{json.dumps(payload)}"
             ),
         },
@@ -1163,7 +1169,6 @@ def stream_analysis_to_placeholder(
     stream = openai.chat.completions.create(
         model=deployment_id,
         messages=messages,
-        temperature=1,
         stream=True,
     )
     full_text = ""
@@ -1230,6 +1235,12 @@ def maybe_run_analysis(
         logger.warning("Analysis request discarded due to missing selections")
         return
 
+    # Skip full re-run if this exact selection was already analysed this session.
+    if signature and signature == st.session_state.get("correlation_signature"):
+        st.session_state["analysis_request"] = None
+        logger.info("Skipping duplicate analysis run; signature unchanged")
+        return
+
     run_id = uuid.uuid4().hex[:8]
     st.session_state["analysis_request"] = None
     st.session_state["analysis_inflight"] = True
@@ -1242,8 +1253,17 @@ def maybe_run_analysis(
 
     try:
         with st.spinner("Running analysis..."):
+            _t_total = time.perf_counter()
+
+            _t0 = time.perf_counter()
             tariff_df = fetch_tariffs_for_codes(conn, products)
+            print(f"[PERF] fetch_tariffs_for_codes:            {(time.perf_counter() - _t0) * 1000:.0f}ms", flush=True)
+
+            _t0 = time.perf_counter()
             ch99_df = fetch_ch99_for_codes_and_countries(conn, products, countries)
+            print(f"[PERF] fetch_ch99_for_codes_and_countries: {(time.perf_counter() - _t0) * 1000:.0f}ms", flush=True)
+
+            _t0 = time.perf_counter()
             (
                 corr_df_full,
                 corr_df_table,
@@ -1252,10 +1272,18 @@ def maybe_run_analysis(
                 duty_exclusions,
                 has_specific_data,
             ) = build_correlation_dataframe(countries, tariff_df, risk_df, ch99_df)
+            print(f"[PERF] build_correlation_dataframe:        {(time.perf_counter() - _t0) * 1000:.0f}ms", flush=True)
+
+            _t0 = time.perf_counter()
             headline_source_df = corr_df_full if not corr_df_full.empty else corr_df_table
             headline_text = _derive_headline(headline_source_df, countries, products)
+            print(f"[PERF] _derive_headline:                   {(time.perf_counter() - _t0) * 1000:.0f}ms", flush=True)
+
             timestamp = datetime.now().strftime("%I:%M %p")
+
+            _t0 = time.perf_counter()
             risk_snapshot = build_risk_snapshot(risk_df, countries)
+            print(f"[PERF] build_risk_snapshot:                {(time.perf_counter() - _t0) * 1000:.0f}ms", flush=True)
             non_ad_text = _format_non_ad_summary_for_text(non_ad_summary)
             duty_exclusion_message = None
             if duty_exclusions:
@@ -1327,9 +1355,11 @@ def maybe_run_analysis(
                 )
             else:
                 fig = render_correlation_chart(corr_df_full)
+                _t0 = time.perf_counter()
                 summary_text = stream_analysis_to_placeholder(
                     corr_df_full, deployment_id, placeholder, headline=headline_text
                 )
+                print(f"[PERF] stream_analysis_to_placeholder LLM: {(time.perf_counter() - _t0) * 1000:.0f}ms", flush=True)
                 if non_ad_text:
                     summary_text = f"{summary_text}\n\n{non_ad_text}"
                     if placeholder:
@@ -1375,6 +1405,7 @@ def maybe_run_analysis(
                 )
             st.session_state["correlation_signature"] = signature
             success = True
+            print(f"[PERF] ─── TOTAL analysis run:             {(time.perf_counter() - _t_total) * 1000:.0f}ms", flush=True)
             logger.info(
                 "Analysis run completed",
                 extra={

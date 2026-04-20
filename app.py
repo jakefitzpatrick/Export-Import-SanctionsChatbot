@@ -594,13 +594,17 @@ div
         else:
             timestamp = datetime.now().strftime("%I:%M %p")
             append_message({"role": "user", "content": question, "time": timestamp})
+            stream_placeholder = st.empty()
             try:
-                assistant_text, metadata = answer_question(question, deployment_id, conn)
+                assistant_text, metadata = answer_question(
+                    question, deployment_id, conn, stream_placeholder
+                )
             except Exception as exc:
                 logger.exception("Chat flow failed")
                 st.session_state[LAST_RESULT_KEY] = None
                 assistant_text = f"Error: {exc}"
                 metadata = {"mode": "error"}
+            stream_placeholder.empty()
             append_message(
                 {
                     "role": "assistant",
