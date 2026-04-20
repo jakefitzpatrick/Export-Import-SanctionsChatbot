@@ -665,12 +665,14 @@ div
                         rate_column = "Effective Rate (%)" if "Effective Rate (%)" in chart_df_summary.columns else None
                         if rate_column:
                             numeric_rates = (
-                                chart_df_summary[rate_column]
-                                .astype(str)
-                                .str.replace("%", "", regex=False)
-                                .str.strip()
-                                .replace("", pd.NA)
-                                .astype(float)
+                                pd.to_numeric(
+                                    chart_df_summary[rate_column]
+                                    .astype(str)
+                                    .str.replace("%", "", regex=False)
+                                    .str.strip()
+                                    .replace({"": None, "—": None, "nan": None}),
+                                    errors="coerce",
+                                )
                             )
                             chart_df_summary["_effective_rate_numeric"] = numeric_rates
                             if numeric_rates.notna().any():
