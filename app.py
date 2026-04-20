@@ -617,7 +617,8 @@ div
 
     with chat_feed:
         st.markdown('<div data-chat="true"></div>', unsafe_allow_html=True)
-        if len(st.session_state.messages) == 0:
+        is_loading = st.session_state.get("analysis_inflight") or st.session_state.get("analysis_request")
+        if len(st.session_state.messages) == 0 and not is_loading:
             st.markdown("""
 <div style='display:flex;flex-direction:column;align-items:center;justify-content:center;height:340px;gap:14px;'>
   <div style='width:56px;height:56px;border-radius:14px;border:2px solid #D1D5DB;display:flex;align-items:center;justify-content:center;'>
