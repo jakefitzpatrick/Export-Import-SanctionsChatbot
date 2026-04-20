@@ -47,6 +47,44 @@ COUNTRY_ALIASES = {
 _LOGGED_DYNAMIC_CODES: set[str] = set()
 _LOGGED_UNKNOWN_CODES: set[str] = set()
 
+PROGRAM_SYMBOL_DESCRIPTIONS = {
+    "A": "Generalized System of Preferences (GSP) — duty-free treatment for eligible developing countries.",
+    "A*": "Generalized System of Preferences (GSP) — certain products/exclusions under the same program.",
+    "A+": "Generalized System of Preferences (GSP) Plus — expanded benefits for qualifying partners.",
+    "AU": "United States–Australia Free Trade Agreement Implementation Act.",
+    "B": "Automotive Products Trade Act preferences.",
+    "BH": "United States–Bahrain Free Trade Agreement Implementation Act.",
+    "C": "Agreement on Trade in Civil Aircraft.",
+    "CL": "United States–Chile Free Trade Agreement.",
+    "D": "African Growth and Opportunity Act (AGOA).",
+    "E": "Caribbean Basin Economic Recovery Act.",
+    "E*": "Caribbean Basin Economic Recovery Act (alternate designation).",
+    "IL": "United States–Israel Free Trade Area.",
+    "JO": "United States–Jordan Free Trade Area Implementation Act.",
+    "JP": "Trade Agreement between the United States and Japan.",
+    "K": "Agreement on Trade in Pharmaceutical Products.",
+    "P": "Dominican Republic–Central America–United States Free Trade Agreement (CAFTA-DR).",
+    "P+": "Dominican Republic–Central America–United States Free Trade Agreement (CAFTA-DR).",
+    "L": "Uruguay Round Concessions on Intermediate Chemicals for Dyes.",
+    "R": "United States–Caribbean Basin Trade Partnership Act.",
+    "MA": "United States–Morocco Free Trade Agreement Implementation Act.",
+    "SG": "United States–Singapore Free Trade Agreement.",
+    "OM": "United States–Oman Free Trade Agreement Implementation Act.",
+    "PE": "United States–Peru Trade Promotion Agreement Implementation Act.",
+    "KR": "United States–Korea Free Trade Agreement Implementation Act.",
+    "CO": "United States–Colombia Trade Promotion Agreement Implementation Act.",
+    "PA": "United States–Panama Trade Promotion Agreement Implementation Act.",
+    "NP": "Nepal Preference Program.",
+    "S": "United States–Mexico–Canada Agreement (USMCA).",
+    "S+": "United States–Mexico–Canada Agreement (USMCA) – alternate designation.",
+}
+
+def get_program_description(code: str) -> str | None:
+    if not code:
+        return None
+    normalized = code.strip().upper()
+    return PROGRAM_SYMBOL_DESCRIPTIONS.get(normalized)
+
 
 def canonicalize_country(name: str) -> str:
     """Normalize country labels to match risk dataset naming."""

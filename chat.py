@@ -16,6 +16,7 @@ import streamlit as st
 
 from logger import setup_logger
 from risk_model import RISK_METHOD_SUMMARY
+from special_rates import get_program_description
 from utils import LAST_RESULT_KEY
 
 QUESTION_PLACEHOLDER = "Ask about the HTS data"
@@ -94,6 +95,7 @@ SQL_SYSTEM_PROMPT = (
     "Only use SELECT statements; avoid INSERT/UPDATE/DELETE/PRAGMA."
 )
 SELECT_PATTERN = re.compile(r"SELECT\b.*", re.IGNORECASE | re.DOTALL)
+PROGRAM_CMD_PATTERN = re.compile(r"^/program\s+([A-Za-z][A-Za-z0-9\+\*]*)$", re.IGNORECASE)
 
 logger = setup_logger(__name__)
 
@@ -172,7 +174,36 @@ def _build_chat_context() -> dict:
     return {
         "latest_analysis": latest_analysis,
         "recent_chat": recent_chat,
+        "last_sql_result": st.session_state.get(LAST_RESULT_KEY),
     }
+
+
+def _format_analysis_bundle(analysis: dict | None) -> str | None:
+    if not analysis:
+        return None
+    bundle = {
+        "summary": analysis.get("summary"),
+        "selections": analysis.get("selections"),
+        "risk_snapshot": analysis.get("risk_snapshot"),
+        "chapter99_summary": analysis.get("ch99_summary"),
+        "non_ad_text": analysis.get("non_ad_summary_text"),
+        "tariff_breakdown": analysis.get("tariff_breakdown"),
+    }
+    return json.dumps(bundle, default=str, indent=2)
+
+
+def _maybe_handle_program_command(question: str) -> tuple[str, dict] | None:
+    match = PROGRAM_CMD_PATTERN.match(question.strip())
+    if not match:
+        return None
+    code = match.group(1).upper()
+    description = get_program_description(code)
+    if description:
+        response = f"{code}: {description}"
+    else:
+        response = f"I don't have a description for program code '{code}'."
+    metadata = {"mode": "program", "program_code": code}
+    return response, metadata
 
 
 def build_sql_messages(question: str, context: dict) -> list[dict]:
@@ -282,6 +313,10 @@ def run_sql_chat_flow(
 
 
 def answer_question(question: str, deployment_id: str, conn: sqlite3.Connection) -> tuple[str, dict]:
+    special = _maybe_handle_program_command(question)
+    if special:
+        return special
+
     context = _build_chat_context()
     mode, normalized_question = decide_chat_mode(question, context)
     logger.info(
@@ -305,21 +340,19 @@ def answer_question_with_context(question: str, deployment_id: str, context: dic
     sections = []
     if selections:
         sections.append(f"SELECTIONS\n{json.dumps(selections, default=str)}")
-    if risk_snapshot:
-        sections.append(f"COUNTRY RISK SCORES\n{json.dumps(risk_snapshot, default=str)}")
-    if tariff_breakdown:
-        breakdown_note = (
-            "TARIFF BREAKDOWN (per country)\n"
-            "Fields: country, hts_code, product_description, base_rate (raw HTS text), "
-            "effective_rate_pct (after Ch.99), ch99_surcharge (percentage-point delta from Ch.99), "
-            "trade_program (Ch.99 program driving the surcharge), rate_source, risk_score\n"
-            + json.dumps(tariff_breakdown, default=str)
-        )
-        sections.append(breakdown_note)
-    if ch99_summary.get("n_adjusted"):
-        sections.append(f"CHAPTER 99 SUMMARY\n{json.dumps(ch99_summary, default=str)}")
-    if summary:
+    structured_bundle = _format_analysis_bundle(analysis)
+    if structured_bundle:
+        sections.append(f"LATEST ANALYSIS BUNDLE\n{structured_bundle}")
+    elif summary:
         sections.append(f"ANALYSIS NARRATIVE\n{summary}")
+    last_sql = context.get("last_sql_result")
+    if last_sql:
+        sql_excerpt = {
+            "sql": last_sql.get("sql"),
+            "row_count": last_sql.get("row_count"),
+            "preview_rows": last_sql.get("records", [])[:3],
+        }
+        sections.append(f"LAST SQL RESULT\n{json.dumps(sql_excerpt, default=str)}")
     sections.append(f"RISK SCORE METHODOLOGY\n{RISK_METHOD_SUMMARY}")
     sections.append(f"RECENT CHAT\n{json.dumps(context.get('recent_chat', []), default=str)}")
     sections.append(f"USER QUESTION\n{question}")
