@@ -298,22 +298,24 @@ def get_db_connection(db_path: str) -> sqlite3.Connection:
     return conn
 
 
-@st.cache_data(show_spinner=False)
-def load_product_options(_conn: sqlite3.Connection) -> list[tuple[str, str]]:
-    limit_clause = ""
-    params: tuple[int, ...] | None = None
-    if MAX_PRODUCT_OPTIONS is not None:
-        limit_clause = " LIMIT ?"
-        params = (MAX_PRODUCT_OPTIONS,)
+@st.cache_resource(show_spinner=False)
+def _load_full_product_catalog(db_path: str) -> pd.DataFrame:
     query = (
         f'SELECT hts_code, description FROM {HTS_VIEW_NAME} '
         'WHERE hts_code IS NOT NULL AND hts_code <> "" '
-        f'ORDER BY hts_code{limit_clause}'
+        'ORDER BY hts_code'
     )
     try:
-        df = pd.read_sql_query(query, _conn, params=params)
+        with sqlite3.connect(db_path) as conn:
+            return pd.read_sql_query(query, conn)
     except Exception as exc:
-        logger.warning("Failed to load product options: %s", exc)
+        logger.warning("Failed to load HTS catalog: %s", exc)
+        return pd.DataFrame(columns=["hts_code", "description"])
+
+
+def load_product_options(_conn: sqlite3.Connection) -> list[tuple[str, str]]:
+    df = _load_full_product_catalog(str(HTS_DB_PATH)).copy()
+    if df.empty:
         return []
 
     missing_codes: list[str] = []
@@ -333,8 +335,6 @@ def load_product_options(_conn: sqlite3.Connection) -> list[tuple[str, str]]:
         except Exception as exc:
             logger.warning("Failed to fetch ensured HTS codes: %s", exc)
 
-    if df.empty:
-        return []
     df = df.drop_duplicates(subset=["hts_code"]).sort_values("hts_code")
     return list(df.itertuples(index=False, name=None))
 
