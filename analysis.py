@@ -1444,7 +1444,36 @@ def maybe_run_analysis(
                 pts_3d.append({"name": ctry, "lat": lat, "lon": lon})
 
         if placeholder:
-            placeholder.markdown(globe_html, unsafe_allow_html=True)
+            import time
+            thinking_steps = [
+                (f"Identifying selected countries: <strong>{', '.join(countries)}</strong>", 0.8),
+                (f"Querying HTS SQLite database for: <strong>{', '.join(products)}</strong>", 1.0),
+                ("Parsing general duty rates and checking Chapter 99 tariff adjustments...", 1.0),
+                ("Loading V-Dem indicators and computing risk scores per country...", 1.0),
+                ("Building correlation matrix of risk scores vs effective duty rates...", 0.8),
+                ("Sending data to <strong>Azure OpenAI GPT-4</strong> for compliance narrative...", 0.8),
+                ("<em style='color:#4F6D7A;'>Generating actionable insights and recommendations...</em>", 0.5),
+            ]
+
+            def render_thinking(steps_so_far):
+                rows = ""
+                for idx, (text, _) in enumerate(steps_so_far):
+                    num = str(idx + 1).zfill(2)
+                    rows += f"<div style='display:flex;gap:10px;align-items:flex-start;margin-bottom:8px;'><span style='color:#0B2A4A;font-weight:600;font-size:11px;min-width:20px;margin-top:2px;'>{num}</span><span style='font-size:13px;color:#374151;line-height:1.6;'>{text}</span></div>"
+                placeholder.markdown(f"""
+<div style='background:#F8FAFC;border:0.5px solid #E2E8F0;border-radius:12px;padding:18px 20px;margin:8px 0;'>
+  <div style='display:flex;align-items:center;gap:8px;margin-bottom:14px;'>
+    <div style='width:8px;height:8px;border-radius:50%;background:#0B2A4A;'></div>
+    <span style='font-size:13px;font-weight:500;color:#0B2A4A;'>Thinking...</span>
+  </div>
+  {rows}
+</div>""", unsafe_allow_html=True)
+
+            shown = []
+            for step in thinking_steps:
+                shown.append(step)
+                render_thinking(shown)
+                time.sleep(step[1])
 
         with st.spinner("Running analysis..."):
             tariff_df = fetch_tariffs_for_codes(conn, products)

@@ -493,7 +493,178 @@ div
         st.multiselect("Countries", options=country_options, key="selected_countries", max_selections=MAX_COUNTRY_SELECTION, label_visibility="hidden")
         st.markdown("<p style='font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:0.12em;color:rgba(255,255,255,0.45);margin-top:14px;margin-bottom:6px;'>HTS Products</p>", unsafe_allow_html=True)
         if display_options:
-            st.multiselect("HTS Products", options=display_options, key="selected_products_display", max_selections=MAX_PRODUCT_SELECTION, label_visibility="hidden")
+            all_codes = [opt.split(" — ")[0].strip() for opt in display_options]
+
+            # Build chapter list (first 2 digits)
+            chapters = sorted(set(code[:2] for code in all_codes if len(code) >= 2))
+            CHAPTER_NAMES = {
+                "01": "Live animals",
+                "02": "Meat and edible meat offal",
+                "03": "Fish and crustaceans",
+                "04": "Dairy, eggs, honey",
+                "05": "Other animal products",
+                "06": "Live trees and plants",
+                "07": "Edible vegetables",
+                "08": "Edible fruit and nuts",
+                "09": "Coffee, tea, spices",
+                "10": "Cereals",
+                "11": "Milling industry products",
+                "12": "Oil seeds and misc grains",
+                "13": "Lac, gums, resins",
+                "14": "Vegetable plaiting materials",
+                "15": "Animal and vegetable fats",
+                "16": "Prepared meat and fish",
+                "17": "Sugars and confectionery",
+                "18": "Cocoa and cocoa preparations",
+                "19": "Preparations of cereals",
+                "20": "Preparations of vegetables and fruit",
+                "21": "Miscellaneous edible preparations",
+                "22": "Beverages and vinegar",
+                "23": "Residues from food industries",
+                "24": "Tobacco",
+                "25": "Salt, sulfur, earth, stone",
+                "26": "Ores, slag and ash",
+                "27": "Mineral fuels and oils",
+                "28": "Inorganic chemicals",
+                "29": "Organic chemicals",
+                "30": "Pharmaceutical products",
+                "31": "Fertilizers",
+                "32": "Tanning and dyeing extracts",
+                "33": "Essential oils and cosmetics",
+                "34": "Soap and waxes",
+                "35": "Albuminoidal substances",
+                "36": "Explosives and pyrotechnics",
+                "37": "Photographic goods",
+                "38": "Miscellaneous chemicals",
+                "39": "Plastics",
+                "40": "Rubber",
+                "41": "Raw hides and skins",
+                "42": "Leather articles",
+                "43": "Furskins and artificial fur",
+                "44": "Wood and articles of wood",
+                "45": "Cork",
+                "46": "Manufactures of straw",
+                "47": "Pulp of wood",
+                "48": "Paper and paperboard",
+                "49": "Printed books and newspapers",
+                "50": "Silk",
+                "51": "Wool and animal hair",
+                "52": "Cotton",
+                "53": "Other vegetable textile fibres",
+                "54": "Man-made filaments",
+                "55": "Man-made staple fibres",
+                "56": "Wadding and felt",
+                "57": "Carpets and floor coverings",
+                "58": "Special woven fabrics",
+                "59": "Impregnated textile fabrics",
+                "60": "Knitted or crocheted fabrics",
+                "61": "Knitted apparel",
+                "62": "Woven apparel",
+                "63": "Other made-up textile articles",
+                "64": "Footwear",
+                "65": "Headgear",
+                "66": "Umbrellas and walking sticks",
+                "67": "Feathers and artificial flowers",
+                "68": "Stone, plaster and cement",
+                "69": "Ceramic products",
+                "70": "Glass and glassware",
+                "71": "Precious stones and metals",
+                "72": "Iron and steel",
+                "73": "Articles of iron or steel",
+                "74": "Copper",
+                "75": "Nickel",
+                "76": "Aluminium",
+                "78": "Lead",
+                "79": "Zinc",
+                "80": "Tin",
+                "81": "Other base metals",
+                "82": "Tools and cutlery",
+                "83": "Miscellaneous metal articles",
+                "84": "Machinery and mechanical appliances",
+                "85": "Electrical machinery",
+                "86": "Railway locomotives",
+                "87": "Vehicles",
+                "88": "Aircraft and spacecraft",
+                "89": "Ships and boats",
+                "90": "Optical and medical instruments",
+                "91": "Clocks and watches",
+                "92": "Musical instruments",
+                "93": "Arms and ammunition",
+                "94": "Furniture and bedding",
+                "95": "Toys and games",
+                "96": "Miscellaneous manufactured articles",
+                "97": "Works of art",
+                "98": "Special classification provisions",
+                "99": "Temporary legislation",
+            }
+            chapter_labels = {ch: f"Ch. {ch} — {CHAPTER_NAMES.get(ch.zfill(2), 'Other')}" for ch in chapters}
+
+            st.session_state.setdefault("hts_drill_chapter", None)
+            st.session_state.setdefault("hts_drill_heading", None)
+
+            # Step 1: Chapter
+            chapter_choice = st.selectbox(
+                "Step 1 — Chapter",
+                options=[""] + chapters,
+                format_func=lambda x: "Select chapter..." if x == "" else chapter_labels.get(x, f"Ch. {x}"),
+                key="hts_drill_chapter",
+                label_visibility="hidden",
+            )
+
+            # Step 2: 4-digit heading
+            if chapter_choice:
+                headings = sorted(set(
+                    code[:4] for code in all_codes
+                    if code.startswith(chapter_choice) and len(code) >= 4
+                ))
+                heading_labels = {h: f"{h} — {next((opt.split(' — ',1)[1] for opt in display_options if opt.split(' — ')[0].strip().startswith(h)), '')}" for h in headings}
+                heading_choice = st.selectbox(
+                    "Step 2 — Heading",
+                    options=[""] + headings,
+                    format_func=lambda x: "Select heading..." if x == "" else heading_labels.get(x, x),
+                    key="hts_drill_heading",
+                    label_visibility="hidden",
+                )
+            else:
+                heading_choice = None
+
+            # Step 3: Full 8/10-digit code — add to selection
+            if heading_choice:
+                subheadings = [
+                    opt for opt in display_options
+                    if opt.split(" — ")[0].strip().startswith(heading_choice)
+                ]
+                if subheadings:
+                    sub_choice = st.selectbox(
+                        "Step 3 — Subheading",
+                        options=[""] + subheadings,
+                        format_func=lambda x: "Select code..." if x == "" else x,
+                        key="hts_drill_sub",
+                        label_visibility="hidden",
+                    )
+                    if sub_choice and sub_choice not in st.session_state.get("selected_products_display", []):
+                        if st.button("+ Add to selection", key="hts_add_btn"):
+                            current = st.session_state.get("selected_products_display", [])
+                            if len(current) < MAX_PRODUCT_SELECTION:
+                                current.append(sub_choice)
+                                st.session_state["selected_products_display"] = current
+                                for k in ["hts_drill_chapter", "hts_drill_heading", "hts_drill_sub"]:
+                                    if k in st.session_state:
+                                        del st.session_state[k]
+                                st.rerun()
+
+            # Show selected products
+            selected_prods = st.session_state.get("selected_products_display", [])
+            if selected_prods:
+                for i, prod in enumerate(selected_prods):
+                    col1, col2 = st.columns([5, 1])
+                    with col1:
+                        st.markdown(f"<div style='font-size:11px;color:rgba(255,255,255,0.7);padding:3px 0;'>{prod}</div>", unsafe_allow_html=True)
+                    with col2:
+                        if st.button("✕", key=f"rm_prod_{i}"):
+                            selected_prods.pop(i)
+                            st.session_state["selected_products_display"] = selected_prods
+                            st.rerun()
         st.markdown("<hr>", unsafe_allow_html=True)
         with st.expander("About", expanded=False):
             st.caption("ImportInsight AI translates your prompt into SQL and returns the actual HTS rows.")
