@@ -31,6 +31,94 @@ from logger import setup_logger
 
 logger = setup_logger(__name__)
 
+# Static latitude/longitude map reused by multiple visualisations; defined once to
+# avoid rebuilding the same literal dictionary on every Streamlit rerun.
+COUNTRY_COORDINATES = {
+    "Afghanistan": (33.9, 67.7),
+    "Albania": (41.1, 20.2),
+    "Algeria": (28.0, 1.7),
+    "Angola": (-11.2, 17.9),
+    "Argentina": (-38.4, -63.6),
+    "Armenia": (40.1, 45.0),
+    "Australia": (-25.3, 133.8),
+    "Austria": (47.5, 14.6),
+    "Azerbaijan": (40.1, 47.6),
+    "Bangladesh": (23.7, 90.4),
+    "Belgium": (50.8, 4.5),
+    "Bolivia": (-16.3, -63.6),
+    "Brazil": (-14.2, -51.9),
+    "Bulgaria": (42.7, 25.5),
+    "Cambodia": (12.6, 104.9),
+    "Cameroon": (7.4, 12.4),
+    "Canada": (56.1, -106.3),
+    "Chad": (15.5, 18.7),
+    "Chile": (-35.7, -71.5),
+    "China": (35.9, 104.2),
+    "Colombia": (4.6, -74.3),
+    "Denmark": (56.3, 9.5),
+    "Ecuador": (-1.8, -78.2),
+    "Egypt": (26.8, 30.8),
+    "Eritrea": (15.2, 39.8),
+    "Ethiopia": (9.1, 40.5),
+    "Finland": (61.9, 25.7),
+    "France": (46.2, 2.2),
+    "Germany": (51.2, 10.5),
+    "Ghana": (7.9, -1.0),
+    "Greece": (39.1, 21.8),
+    "India": (20.6, 79.0),
+    "Indonesia": (-0.8, 113.9),
+    "Iran": (32.4, 53.7),
+    "Iraq": (33.2, 43.7),
+    "Italy": (41.9, 12.6),
+    "Japan": (36.2, 138.3),
+    "Jordan": (30.6, 36.2),
+    "Kazakhstan": (48.0, 66.9),
+    "Kenya": (-0.0, 37.9),
+    "Libya": (26.3, 17.2),
+    "Malaysia": (4.2, 108.0),
+    "Mali": (17.6, -2.0),
+    "Mexico": (23.6, -102.6),
+    "Morocco": (31.8, -7.1),
+    "Netherlands": (52.1, 5.3),
+    "Nicaragua": (12.9, -85.2),
+    "Nigeria": (9.1, 8.7),
+    "Norway": (60.5, 8.5),
+    "Pakistan": (30.4, 69.3),
+    "Peru": (-9.2, -75.0),
+    "Philippines": (12.9, 121.8),
+    "Poland": (51.9, 19.1),
+    "Portugal": (39.4, -8.2),
+    "Romania": (45.9, 24.9),
+    "Russia": (61.5, 105.3),
+    "Saudi Arabia": (23.9, 45.1),
+    "Senegal": (14.5, -14.5),
+    "Singapore": (1.4, 103.8),
+    "Somalia": (5.2, 46.2),
+    "South Africa": (-30.6, 22.9),
+    "South Korea": (35.9, 127.8),
+    "South Sudan": (6.9, 31.3),
+    "Spain": (40.5, -3.7),
+    "Sri Lanka": (7.9, 80.8),
+    "Sudan": (12.9, 30.2),
+    "Sweden": (60.1, 18.6),
+    "Switzerland": (46.8, 8.2),
+    "Syria": (34.8, 38.8),
+    "Taiwan": (23.7, 121.0),
+    "Tanzania": (-6.4, 34.9),
+    "Thailand": (15.9, 100.9),
+    "Turkey": (38.9, 35.2),
+    "Uganda": (1.4, 32.3),
+    "Ukraine": (48.4, 31.2),
+    "United Arab Emirates": (23.4, 53.8),
+    "United Kingdom": (55.4, -3.4),
+    "United States": (37.1, -95.7),
+    "Uruguay": (-32.5, -55.8),
+    "Venezuela": (6.4, -66.6),
+    "Vietnam": (14.1, 108.3),
+    "Yemen": (15.6, 48.5),
+    "Zimbabwe": (-19.0, 29.2),
+}
+
 SUMMARY_SAMPLE_LIMIT = 60
 DISPLAY_COLUMN_MAP = [
     ("country", "Country"),
@@ -230,8 +318,18 @@ def fetch_ch99_for_codes_and_countries(
     return df
 
 
+def _build_ch99_lookup(ch99_df: pd.DataFrame | None) -> dict[tuple[str, str], pd.DataFrame]:
+    """Group Chapter 99 rows by (hts_code, country) for fast lookup."""
+    if ch99_df is None or ch99_df.empty:
+        return {}
+    grouped: dict[tuple[str, str], pd.DataFrame] = {}
+    for (hts_code, country), frame in ch99_df.groupby(["hts_code", "ch99_country"], sort=False):
+        grouped[(hts_code, country)] = frame
+    return grouped
+
+
 def _best_ch99_rule(
-    ch99_df: pd.DataFrame,
+    ch99_lookup: dict[tuple[str, str], pd.DataFrame],
     hts_code: str,
     country: str,
 ) -> dict | None:
@@ -246,13 +344,19 @@ def _best_ch99_rule(
       4. Returns a synthetic rule dict combining Floor + additive so that
          apply_ch99_to_duty can compute max(base + additive, floor).
     """
-    if ch99_df is None or ch99_df.empty:
+    if not ch99_lookup:
         return None
-    mask = ch99_df["hts_code"] == hts_code
-    mask &= (ch99_df["ch99_country"] == country) | (ch99_df["ch99_country"] == "Global")
-    candidates = ch99_df[mask].copy()
-    if candidates.empty:
+
+    frames: list[pd.DataFrame] = []
+    exact = ch99_lookup.get((hts_code, country))
+    if exact is not None:
+        frames.append(exact)
+    global_rows = ch99_lookup.get((hts_code, "Global"))
+    if global_rows is not None:
+        frames.append(global_rows)
+    if not frames:
         return None
+    candidates = frames[0] if len(frames) == 1 else pd.concat(frames, ignore_index=True)
 
     candidates = candidates.sort_values("ch99_match_priority")
 
@@ -625,7 +729,8 @@ def build_correlation_dataframe(
             "tariff_rows": len(tariff_df),
         },
     )
-    ch99_available = ch99_df is not None and not ch99_df.empty
+    ch99_lookup = _build_ch99_lookup(ch99_df)
+    ch99_available = bool(ch99_lookup)
     if not selected_countries or tariff_df.empty:
         empty_cols = [
             "country",
@@ -757,7 +862,7 @@ def build_correlation_dataframe(
             if base_has_ad_valorem:
                 ch99_summary["n_total"] += 1
 
-            rule = _best_ch99_rule(ch99_df, product_meta["hts_code"], country_name) if ch99_available else None
+            rule = _best_ch99_rule(ch99_lookup, product_meta["hts_code"], country_name) if ch99_available else None
             if rule is not None and base_has_ad_valorem:
                 adjusted_rate = apply_ch99_to_duty(base_duty_rate_obj, rule)
                 if adjusted_rate is not None:
@@ -1287,37 +1392,6 @@ def maybe_run_analysis(
     )
 
     try:
-        country_coords = {
-            "Afghanistan": (33.9,67.7),"Albania": (41.1,20.2),"Algeria": (28.0,1.7),
-            "Angola": (-11.2,17.9),"Argentina": (-38.4,-63.6),"Armenia": (40.1,45.0),
-            "Australia": (-25.3,133.8),"Austria": (47.5,14.6),"Azerbaijan": (40.1,47.6),
-            "Bangladesh": (23.7,90.4),"Belgium": (50.8,4.5),"Bolivia": (-16.3,-63.6),
-            "Brazil": (-14.2,-51.9),"Bulgaria": (42.7,25.5),"Cambodia": (12.6,104.9),
-            "Cameroon": (7.4,12.4),"Canada": (56.1,-106.3),"Chad": (15.5,18.7),
-            "Chile": (-35.7,-71.5),"China": (35.9,104.2),"Colombia": (4.6,-74.3),
-            "Denmark": (56.3,9.5),"Ecuador": (-1.8,-78.2),"Egypt": (26.8,30.8),
-            "Eritrea": (15.2,39.8),"Ethiopia": (9.1,40.5),"Finland": (61.9,25.7),
-            "France": (46.2,2.2),"Germany": (51.2,10.5),"Ghana": (7.9,-1.0),
-            "Greece": (39.1,21.8),"India": (20.6,79.0),"Indonesia": (-0.8,113.9),
-            "Iran": (32.4,53.7),"Iraq": (33.2,43.7),"Italy": (41.9,12.6),
-            "Japan": (36.2,138.3),"Jordan": (30.6,36.2),"Kazakhstan": (48.0,66.9),
-            "Kenya": (-0.0,37.9),"Libya": (26.3,17.2),"Malaysia": (4.2,108.0),
-            "Mali": (17.6,-2.0),"Mexico": (23.6,-102.6),"Morocco": (31.8,-7.1),
-            "Netherlands": (52.1,5.3),"Nicaragua": (12.9,-85.2),"Nigeria": (9.1,8.7),
-            "Norway": (60.5,8.5),"Pakistan": (30.4,69.3),"Peru": (-9.2,-75.0),
-            "Philippines": (12.9,121.8),"Poland": (51.9,19.1),"Portugal": (39.4,-8.2),
-            "Romania": (45.9,24.9),"Russia": (61.5,105.3),"Saudi Arabia": (23.9,45.1),
-            "Senegal": (14.5,-14.5),"Singapore": (1.4,103.8),"Somalia": (5.2,46.2),
-            "South Africa": (-30.6,22.9),"South Korea": (35.9,127.8),"South Sudan": (6.9,31.3),
-            "Spain": (40.5,-3.7),"Sri Lanka": (7.9,80.8),"Sudan": (12.9,30.2),
-            "Sweden": (60.1,18.6),"Switzerland": (46.8,8.2),"Syria": (34.8,38.8),
-            "Taiwan": (23.7,121.0),"Tanzania": (-6.4,34.9),"Thailand": (15.9,100.9),
-            "Turkey": (38.9,35.2),"Uganda": (1.4,32.3),"Ukraine": (48.4,31.2),
-            "United Arab Emirates": (23.4,53.8),"United Kingdom": (55.4,-3.4),
-            "United States": (37.1,-95.7),"Uruguay": (-32.5,-55.8),"Venezuela": (6.4,-66.6),
-            "Vietnam": (14.1,108.3),"Yemen": (15.6,48.5),"Zimbabwe": (-19.0,29.2),
-        }
-
         def ll_to_xy(lat, lon, w=500, h=250):
             x = round((lon + 180) * (w / 360), 1)
             y = round((90 - lat) * (h / 180), 1)
@@ -1325,8 +1399,8 @@ def maybe_run_analysis(
 
         pts = []
         for ctry in countries:
-            if ctry in country_coords:
-                lat, lon = country_coords[ctry]
+            if ctry in COUNTRY_COORDINATES:
+                lat, lon = COUNTRY_COORDINATES[ctry]
                 x, y = ll_to_xy(lat, lon)
                 pts.append({"name": ctry, "x": x, "y": y})
 
@@ -1363,32 +1437,11 @@ def maybe_run_analysis(
 <p style="font-size:11px;color:#4F6D7A;text-align:center;margin-top:8px;">Querying HTS database &middot; Scoring V-Dem indicators &middot; Generating analysis</p>
 </div>"""
 
-        country_coords = {
-            "Afghanistan": (33.9,67.7),"Albania": (41.1,20.2),"Algeria": (28.0,1.7),
-            "Angola": (-11.2,17.9),"Argentina": (-38.4,-63.6),"Armenia": (40.1,45.0),
-            "Australia": (-25.3,133.8),"Austria": (47.5,14.6),"Azerbaijan": (40.1,47.6),
-            "Bangladesh": (23.7,90.4),"Belgium": (50.8,4.5),"Brazil": (-14.2,-51.9),
-            "Cambodia": (12.6,104.9),"Cameroon": (7.4,12.4),"Canada": (56.1,-106.3),
-            "Chad": (15.5,18.7),"Chile": (-35.7,-71.5),"China": (35.9,104.2),
-            "Colombia": (4.6,-74.3),"Denmark": (56.3,9.5),"Egypt": (26.8,30.8),
-            "Eritrea": (15.2,39.8),"Ethiopia": (9.1,40.5),"France": (46.2,2.2),
-            "Germany": (51.2,10.5),"Ghana": (7.9,-1.0),"Greece": (39.1,21.8),
-            "India": (20.6,79.0),"Indonesia": (-0.8,113.9),"Iran": (32.4,53.7),
-            "Italy": (41.9,12.6),"Japan": (36.2,138.3),"Kenya": (-0.0,37.9),
-            "Malaysia": (4.2,108.0),"Mali": (17.6,-2.0),"Mexico": (23.6,-102.6),
-            "Morocco": (31.8,-7.1),"Netherlands": (52.1,5.3),"Nicaragua": (12.9,-85.2),
-            "Nigeria": (9.1,8.7),"Norway": (60.5,8.5),"Pakistan": (30.4,69.3),
-            "Peru": (-9.2,-75.0),"Philippines": (12.9,121.8),"Poland": (51.9,19.1),
-            "Russia": (61.5,105.3),"Saudi Arabia": (23.9,45.1),"Singapore": (1.4,103.8),
-            "South Africa": (-30.6,22.9),"South Korea": (35.9,127.8),"Spain": (40.5,-3.7),
-            "Sweden": (60.1,18.6),"Switzerland": (46.8,8.2),"Thailand": (15.9,100.9),
-            "Turkey": (38.9,35.2),"Ukraine": (48.4,31.2),"United Kingdom": (55.4,-3.4),
-            "United States": (37.1,-95.7),"Venezuela": (6.4,-66.6),"Vietnam": (14.1,108.3),
-        }
         pts_3d = []
         for ctry in countries:
-            if ctry in country_coords:
-                pts_3d.append({"name": ctry, "lat": country_coords[ctry][0], "lon": country_coords[ctry][1]})
+            if ctry in COUNTRY_COORDINATES:
+                lat, lon = COUNTRY_COORDINATES[ctry]
+                pts_3d.append({"name": ctry, "lat": lat, "lon": lon})
 
         if placeholder:
             placeholder.markdown(globe_html, unsafe_allow_html=True)
