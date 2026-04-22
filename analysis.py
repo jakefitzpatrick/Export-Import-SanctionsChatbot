@@ -1451,7 +1451,7 @@ def maybe_run_analysis(
                 ("Parsing general duty rates and checking Chapter 99 tariff adjustments...", 1.0),
                 ("Loading V-Dem indicators and computing corruption scores per country...", 1.0),
                 ("Building correlation matrix of corruption scores vs effective duty rates...", 0.8),
-                ("Sending data to <strong>Azure OpenAI GPT-4</strong> for compliance narrative...", 0.8),
+                ("Sending data to <strong>Azure OpenAI GPT-5-mini</strong> for compliance narrative...", 0.8),
                 ("<em style='color:#4F6D7A;'>Generating actionable insights and recommendations...</em>", 0.5),
             ]
 

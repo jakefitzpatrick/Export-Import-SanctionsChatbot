@@ -657,14 +657,7 @@ div
             selected_prods = st.session_state.get("selected_products_display", [])
             if selected_prods:
                 for i, prod in enumerate(selected_prods):
-                    col1, col2 = st.columns([5, 1])
-                    with col1:
-                        st.markdown(f"<div style='font-size:11px;color:rgba(255,255,255,0.7);padding:3px 0;'>{prod}</div>", unsafe_allow_html=True)
-                    with col2:
-                        if st.button("✕", key=f"rm_prod_{i}"):
-                            selected_prods.pop(i)
-                            st.session_state["selected_products_display"] = selected_prods
-                            st.rerun()
+                    st.markdown(f"<div style='font-size:11px;color:rgba(255,255,255,0.7);padding:3px 0;'>✓ {prod}</div>", unsafe_allow_html=True)
         st.markdown("<hr>", unsafe_allow_html=True)
         with st.expander("About", expanded=False):
             st.caption("ImportInsight AI translates your prompt into SQL and returns the actual HTS rows.")
@@ -728,7 +721,7 @@ div
             )
         with action_cols[1]:
             if st.button("Clear Inputs", width="stretch", key="context_clear"):
-                reset_app_state(extra_widget_keys=["selected_products_display"])
+                reset_app_state(extra_widget_keys=["selected_products_display", "hts_drill_chapter", "hts_drill_heading", "hts_drill_sub"])
                 st.rerun()
         if analyse_clicked:
             queued = queue_analysis_request(selected_countries, selected_products)
