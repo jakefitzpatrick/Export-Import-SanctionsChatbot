@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Utilities for computing and consuming governance risk scores."""
+"""Utilities for computing and consuming governance corruption scores."""
 
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ FALLBACK_COUNTRY_RISK = {
 
 # ✅ FIXED FILE PATH
 INPUT_PATH = Path("data/vdem_risk_subset_CLEANED.csv")
-OUTPUT_PATH = Path("vdem_risk_scored.csv")
+OUTPUT_PATH = Path("vdem_corruption_scored.csv")
 
 INDICATORS = [
     "v2excrptps",
@@ -60,12 +60,12 @@ WEIGHTS = {
 }
 
 RISK_METHOD_SUMMARY = (
-    "Governance risk scores are derived from five V-Dem indicators: corrupt exchanges (v2excrptps), "
+    "Governance corruption scores are derived from five V-Dem indicators: corrupt exchanges (v2excrptps), "
     "public theft (v2exthftps), transparent laws (v2cltrnslw), respect for civil administration (v2clrspct), "
     "and meritocratic state appointments (v2stcritrecadm). Each indicator is inverted and normalized to a 0–100 "
     "scale using risk = ((max - value) / (max - min)) * 100 so that higher numbers always mean higher risk. "
     "Those normalized columns are then combined into a composite score using fixed weights "
-    "(25%, 15%, 20%, 20%, 20% respectively). The resulting `risk_score` stays between 0 and 100 and is "
+    "(25%, 15%, 20%, 20%, 20% respectively). The resulting `corruption_score` stays between 0 and 100 and is "
     "bucketed using shared thresholds: <33 = Low (#1f9d55), 33–66 = Medium (#f1c40f), >66 = High (#c0392b)."
 )
 
@@ -101,7 +101,7 @@ def normalize_indicator(series: pd.Series) -> pd.Series:
 
 def categorize_risk(score: float) -> str:
     if not 0 <= score <= 100:
-        raise ValueError("risk score must be between 0 and 100")
+        raise ValueError("corruption score must be between 0 and 100")
     if score < RISK_THRESHOLDS["Low"]:
         return "Low"
     if score < RISK_THRESHOLDS["Medium"]:
@@ -124,12 +124,12 @@ def load_country_risk_df(csv_path: Path | str = OUTPUT_PATH) -> pd.DataFrame:
         logger.warning("Failed to load %s: %s", path, exc)
         return _fallback_country_risk_df()
     country_col = "country_name" if "country_name" in df.columns else "country"
-    if country_col not in df.columns or "risk_score" not in df.columns:
+    if country_col not in df.columns or "corruption_score" not in df.columns:
         logger.warning("Risk CSV missing required columns; using fallback data.")
         return _fallback_country_risk_df()
     df = df.rename(columns={country_col: "country"})
-    df = df.dropna(subset=["country", "risk_score"])
-    df["score"] = df["risk_score"].astype(float)
+    df = df.dropna(subset=["country", "corruption_score"])
+    df["score"] = df["corruption_score"].astype(float)
     if "year" not in df.columns:
         df["year"] = datetime.now().year
     df["level"] = df["score"].apply(categorize_risk)
@@ -170,27 +170,27 @@ def main() -> None:
         risk_col = f"risk_{indicator}"
         df[risk_col] = normalize_indicator(df[indicator])
 
-    # Compute weighted risk score
-    df["risk_score"] = sum(df[col] * weight for col, weight in WEIGHTS.items())
+    # Compute weighted corruption score
+    df["corruption_score"] = sum(df[col] * weight for col, weight in WEIGHTS.items())
 
     # Create categorical risk levels using shared thresholds
-    df["risk_level"] = df["risk_score"].apply(categorize_risk)
+    df["risk_level"] = df["corruption_score"].apply(categorize_risk)
 
     # Identify country column
     id_col = "country_name" if "country_name" in df.columns else "country"
     if id_col not in df.columns:
         raise ValueError("Neither 'country_name' nor 'country' exists in the dataset.")
 
-    # Sort by risk score (highest risk first)
-    df = df.sort_values("risk_score", ascending=False).reset_index(drop=True)
+    # Sort by corruption score (highest risk first)
+    df = df.sort_values("corruption_score", ascending=False).reset_index(drop=True)
 
     # Save full dataset
     df.to_csv(OUTPUT_PATH, index=False)
 
     # Log preview of results and summary statistics
-    preview_columns = [id_col, "year", "risk_score", "risk_level"]
+    preview_columns = [id_col, "year", "corruption_score", "risk_level"]
     logger.info("Top risk entries:\n%s", df.loc[:, preview_columns].head(10).to_string(index=False))
-    logger.info("Risk score summary:\n%s", df["risk_score"].describe().to_string())
+    logger.info("Corruption score summary:\n%s", df["corruption_score"].describe().to_string())
 
     # Explanation for write-up
     logger.debug(

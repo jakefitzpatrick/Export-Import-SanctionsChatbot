@@ -900,7 +900,7 @@ div
                 has_tabs = fig_payload or risk_snapshot or chart_data
                 if has_tabs:
                     tab_labels = []
-                    if risk_snapshot: tab_labels.append("◎ Risk Score")
+                    if risk_snapshot: tab_labels.append("◎ Corruption Score")
                     if fig_payload: tab_labels.append("∿ Graph")
                     if chart_data: tab_labels.append("≡ Data")
                     tab_labels.append("◈ Analysis")
@@ -979,7 +979,7 @@ div
                         chip_product = products[0] if products else "this product"
                         suggestions = [
                             f"Which country has the lowest duty for {chip_product}?",
-                            f"What is the risk score for {chip_country}?",
+                            f"What is the corruption score for {chip_country}?",
                             f"Why do duty rates differ across countries?",
                             f"What trade programs reduce tariffs for {chip_country}?",
                         ]

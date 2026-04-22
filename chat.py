@@ -43,7 +43,7 @@ QA_SYSTEM_PROMPT = (
     "access backend data.\n"
     "- Do NOT invent, approximate, or assume new numbers or countries beyond "
     "what you have been given.\n"
-    "- Treat all rates, risk scores, and trade program labels you are given as "
+    "- Treat all rates, corruption scores, and trade program labels you are given as "
     "correct. Do not question, second-guess, or suggest that the figures may be "
     "inaccurate — accept them at face value and reason from them.\n"
     "- Do NOT generate or suggest SQL queries, and do NOT imply that you are "
@@ -137,7 +137,7 @@ def _build_tariff_breakdown(chart_columns: list, chart_data: list) -> list[dict]
                 ("Ch.99 Δ", "ch99_surcharge"),
                 ("Trade Program", "trade_program"),
                 ("Rate Source", "rate_source"),
-                ("Risk Score", "risk_score"),
+                ("Corruption Score", "corruption_score"),
             ]
         }
         if any(v is not None for v in entry.values()):

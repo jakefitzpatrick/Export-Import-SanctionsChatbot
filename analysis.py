@@ -122,7 +122,7 @@ COUNTRY_COORDINATES = {
 SUMMARY_SAMPLE_LIMIT = 60
 DISPLAY_COLUMN_MAP = [
     ("country", "Country"),
-    ("risk_score", "Risk Score"),
+    ("corruption_score", "Corruption Score"),
     ("hts_code", "HTS Code"),
     ("product_description", "Product"),
     ("general_duty_rate_text", "Base Rate"),
@@ -590,8 +590,8 @@ def _build_display_table(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
     display_df = df[available].copy().rename(
         columns={src: label for src, label in DISPLAY_COLUMN_MAP if src in available}
     )
-    if "Risk Score" in display_df.columns:
-        display_df["Risk Score"] = display_df["Risk Score"].apply(
+    if "Corruption Score" in display_df.columns:
+        display_df["Corruption Score"] = display_df["Corruption Score"].apply(
             lambda v: f"{float(v):.1f}" if pd.notna(v) else "—"
         )
     if "Effective Rate (%)" in display_df.columns:
@@ -734,7 +734,7 @@ def build_correlation_dataframe(
     if not selected_countries or tariff_df.empty:
         empty_cols = [
             "country",
-            "risk_score",
+            "corruption_score",
             "risk_level",
             "hts_code",
             "product_description",
@@ -760,7 +760,7 @@ def build_correlation_dataframe(
     if country_subset.empty:
         empty_cols = [
             "country",
-            "risk_score",
+            "corruption_score",
             "risk_level",
             "hts_code",
             "product_description",
@@ -924,7 +924,7 @@ def build_correlation_dataframe(
             combined_rows.append(
                 {
                     "country": country_name,
-                    "risk_score": country_meta["score"],
+                    "corruption_score": country_meta["score"],
                     "risk_level": country_meta["level"],
                     "country_color": country_meta["color"],
                     "hts_code": product_meta["hts_code"],
@@ -965,7 +965,7 @@ def build_correlation_dataframe(
         logger.info("Combined dataframe empty; returning placeholders")
         empty_cols = [
             "country",
-            "risk_score",
+            "corruption_score",
             "risk_level",
             "hts_code",
             "product_description",
@@ -1080,7 +1080,7 @@ def render_correlation_chart(df: pd.DataFrame, mode: str = "ad_valorem") -> go.F
     has_ch99 = "ch99_applied" in plot_df.columns
     agg_dict = {
         "ad_valorem_rate": ("ad_valorem_rate", "first"),
-        "risk_score": ("risk_score", "first"),
+        "corruption_score": ("corruption_score", "first"),
         "risk_level": ("risk_level", "first"),
     }
     if has_ch99:
@@ -1097,7 +1097,7 @@ def render_correlation_chart(df: pd.DataFrame, mode: str = "ad_valorem") -> go.F
         level = row.get("risk_level", "")
 
         fig.add_trace(go.Scatter(
-            x=[row["risk_score"]],
+            x=[row["corruption_score"]],
             y=[row["ad_valorem_rate"]],
             mode="markers+text",
             name=row["country"],
@@ -1112,7 +1112,7 @@ def render_correlation_chart(df: pd.DataFrame, mode: str = "ad_valorem") -> go.F
             ),
             hovertemplate=(
                 f"<b>{row['country']}</b><br>"
-                f"Risk score: {row['risk_score']:.1f} / 100<br>"
+                f"Corruption score: {row['corruption_score']:.1f} / 100<br>"
                 f"Effective duty: {row['ad_valorem_rate']:.2f}%<br>"
                 f"Risk level: {level}<br>"
                 f"{'⚠ Ch.99 adjusted' if ch99 else 'Base rate'}"
@@ -1121,7 +1121,7 @@ def render_correlation_chart(df: pd.DataFrame, mode: str = "ad_valorem") -> go.F
         ))
 
         fig.add_annotation(
-            x=row["risk_score"],
+            x=row["corruption_score"],
             y=row["ad_valorem_rate"],
             text=f"{row['ad_valorem_rate']:.1f}%",
             showarrow=False,
@@ -1129,7 +1129,7 @@ def render_correlation_chart(df: pd.DataFrame, mode: str = "ad_valorem") -> go.F
             yshift=0,
         )
 
-    max_risk = summary["risk_score"].max()
+    max_risk = summary["corruption_score"].max()
     max_duty = summary["ad_valorem_rate"].max()
 
 
@@ -1140,7 +1140,7 @@ def render_correlation_chart(df: pd.DataFrame, mode: str = "ad_valorem") -> go.F
         plot_bgcolor="white",
         showlegend=False,
         xaxis=dict(
-            title="Country risk score (lower = safer)",
+            title="Country corruption score (lower = safer)",
             gridcolor="#F0F2F5",
             zeroline=False,
             range=[-2, max_risk * 1.3],
@@ -1160,7 +1160,7 @@ def render_correlation_chart(df: pd.DataFrame, mode: str = "ad_valorem") -> go.F
         if not adjusted.empty:
             fig.add_trace(
                 go.Scatter(
-                    x=adjusted["risk_score"],
+                    x=adjusted["corruption_score"],
                     y=adjusted["ad_valorem_rate"],
                     mode="markers",
                     marker=dict(
@@ -1196,8 +1196,8 @@ def _build_summary_stats(df: pd.DataFrame) -> dict:
         "count_pairs": len(df),
         "countries": sorted(df["country"].unique().tolist()),
         "hts_codes": sorted(df["hts_code"].unique().tolist()),
-        "risk_min": _round_one(df["risk_score"].min()),
-        "risk_max": _round_one(df["risk_score"].max()),
+        "risk_min": _round_one(df["corruption_score"].min()),
+        "risk_max": _round_one(df["corruption_score"].max()),
         "duty_min": float(df["ad_valorem_rate"].min()),
         "duty_max": float(df["ad_valorem_rate"].max()),
     }
@@ -1232,18 +1232,18 @@ def _derive_headline(
         return f"{row['country']} is your only {risk_level} option for HTS {row['hts_code']} with {duty_text}."
 
     duties = df["ad_valorem_rate"]
-    risk_scores = df["risk_score"]
-    if duties.nunique(dropna=False) == 1 and risk_scores.nunique(dropna=False) == 1:
+    corruption_scores = df["corruption_score"]
+    if duties.nunique(dropna=False) == 1 and corruption_scores.nunique(dropna=False) == 1:
         duty_val = _round_display(duties.iloc[0])
-        risk_val = round(float(risk_scores.iloc[0]), 1)
+        risk_val = round(float(corruption_scores.iloc[0]), 1)
         return (
             f"All {len(unique_pairs)} selections share the same profile: {duty_val}% duty and risk ≈ {risk_val}."
         )
 
     min_duty = duties.min()
     best_by_duty = df[duties == min_duty]
-    min_risk = best_by_duty["risk_score"].min()
-    best_rows = best_by_duty[best_by_duty["risk_score"] == min_risk]
+    min_risk = best_by_duty["corruption_score"].min()
+    best_rows = best_by_duty[best_by_duty["corruption_score"] == min_risk]
     best_countries = sorted(best_rows["country"].unique().tolist())
     best_codes = sorted(best_rows["hts_code"].unique().tolist())
     duty_display = _round_display(min_duty)
@@ -1449,8 +1449,8 @@ def maybe_run_analysis(
                 (f"Identifying selected countries: <strong>{', '.join(countries)}</strong>", 0.8),
                 (f"Querying HTS SQLite database for: <strong>{', '.join(products)}</strong>", 1.0),
                 ("Parsing general duty rates and checking Chapter 99 tariff adjustments...", 1.0),
-                ("Loading V-Dem indicators and computing risk scores per country...", 1.0),
-                ("Building correlation matrix of risk scores vs effective duty rates...", 0.8),
+                ("Loading V-Dem indicators and computing corruption scores per country...", 1.0),
+                ("Building correlation matrix of corruption scores vs effective duty rates...", 0.8),
                 ("Sending data to <strong>Azure OpenAI GPT-4</strong> for compliance narrative...", 0.8),
                 ("<em style='color:#4F6D7A;'>Generating actionable insights and recommendations...</em>", 0.5),
             ]
