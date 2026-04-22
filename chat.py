@@ -16,6 +16,7 @@ import streamlit as st
 
 from logger import setup_logger
 from risk_model import RISK_METHOD_SUMMARY
+from special_rates import get_program_description
 from utils import LAST_RESULT_KEY
 
 QUESTION_PLACEHOLDER = "Ask about the HTS data"
@@ -42,7 +43,7 @@ QA_SYSTEM_PROMPT = (
     "access backend data.\n"
     "- Do NOT invent, approximate, or assume new numbers or countries beyond "
     "what you have been given.\n"
-    "- Treat all rates, risk scores, and trade program labels you are given as "
+    "- Treat all rates, corruption scores, and trade program labels you are given as "
     "correct. Do not question, second-guess, or suggest that the figures may be "
     "inaccurate — accept them at face value and reason from them.\n"
     "- Do NOT generate or suggest SQL queries, and do NOT imply that you are "
@@ -94,6 +95,7 @@ SQL_SYSTEM_PROMPT = (
     "Only use SELECT statements; avoid INSERT/UPDATE/DELETE/PRAGMA."
 )
 SELECT_PATTERN = re.compile(r"SELECT\b.*", re.IGNORECASE | re.DOTALL)
+PROGRAM_CMD_PATTERN = re.compile(r"^/program\s+([A-Za-z][A-Za-z0-9\+\*]*)$", re.IGNORECASE)
 
 logger = setup_logger(__name__)
 
@@ -135,7 +137,7 @@ def _build_tariff_breakdown(chart_columns: list, chart_data: list) -> list[dict]
                 ("Ch.99 Δ", "ch99_surcharge"),
                 ("Trade Program", "trade_program"),
                 ("Rate Source", "rate_source"),
-                ("Risk Score", "risk_score"),
+                ("Corruption Score", "corruption_score"),
             ]
         }
         if any(v is not None for v in entry.values()):
@@ -172,7 +174,36 @@ def _build_chat_context() -> dict:
     return {
         "latest_analysis": latest_analysis,
         "recent_chat": recent_chat,
+        "last_sql_result": st.session_state.get(LAST_RESULT_KEY),
     }
+
+
+def _format_analysis_bundle(analysis: dict | None) -> str | None:
+    if not analysis:
+        return None
+    bundle = {
+        "summary": analysis.get("summary"),
+        "selections": analysis.get("selections"),
+        "risk_snapshot": analysis.get("risk_snapshot"),
+        "chapter99_summary": analysis.get("ch99_summary"),
+        "non_ad_text": analysis.get("non_ad_summary_text"),
+        "tariff_breakdown": analysis.get("tariff_breakdown"),
+    }
+    return json.dumps(bundle, default=str, indent=2)
+
+
+def _maybe_handle_program_command(question: str) -> tuple[str, dict] | None:
+    match = PROGRAM_CMD_PATTERN.match(question.strip())
+    if not match:
+        return None
+    code = match.group(1).upper()
+    description = get_program_description(code)
+    if description:
+        response = f"{code}: {description}"
+    else:
+        response = f"I don't have a description for program code '{code}'."
+    metadata = {"mode": "program", "program_code": code}
+    return response, metadata
 
 
 def build_sql_messages(question: str, context: dict) -> list[dict]:
@@ -281,7 +312,16 @@ def run_sql_chat_flow(
     return assistant_text, metadata
 
 
-def answer_question(question: str, deployment_id: str, conn: sqlite3.Connection) -> tuple[str, dict]:
+def answer_question(
+    question: str,
+    deployment_id: str,
+    conn: sqlite3.Connection,
+    stream_placeholder=None,
+) -> tuple[str, dict]:
+    special = _maybe_handle_program_command(question)
+    if special:
+        return special
+
     context = _build_chat_context()
     mode, normalized_question = decide_chat_mode(question, context)
     logger.info(
@@ -289,37 +329,43 @@ def answer_question(question: str, deployment_id: str, conn: sqlite3.Connection)
         extra={"question": question, "mode": mode},
     )
     if mode == "context":
-        return answer_question_with_context(normalized_question, deployment_id, context)
+        return answer_question_with_context(
+            normalized_question, deployment_id, context, stream_placeholder
+        )
     return run_sql_chat_flow(normalized_question, deployment_id, conn, context)
 
 
-def answer_question_with_context(question: str, deployment_id: str, context: dict) -> tuple[str, dict]:
-    """Use the LLM to answer a question based on existing results only."""
+def answer_question_with_context(
+    question: str,
+    deployment_id: str,
+    context: dict,
+    stream_placeholder=None,
+) -> tuple[str, dict]:
+    """Use the LLM to answer a question based on existing results only.
+
+    If stream_placeholder is provided (a Streamlit empty()), tokens are written
+    incrementally so the UI updates as the response arrives.
+    """
     analysis = context.get("latest_analysis") or {}
-    tariff_breakdown = analysis.get("tariff_breakdown") or []
-    risk_snapshot = analysis.get("risk_snapshot") or []
-    ch99_summary = analysis.get("ch99_summary") or {}
     selections = analysis.get("selections") or {}
     summary = analysis.get("summary") or ""
 
     sections = []
     if selections:
         sections.append(f"SELECTIONS\n{json.dumps(selections, default=str)}")
-    if risk_snapshot:
-        sections.append(f"COUNTRY RISK SCORES\n{json.dumps(risk_snapshot, default=str)}")
-    if tariff_breakdown:
-        breakdown_note = (
-            "TARIFF BREAKDOWN (per country)\n"
-            "Fields: country, hts_code, product_description, base_rate (raw HTS text), "
-            "effective_rate_pct (after Ch.99), ch99_surcharge (percentage-point delta from Ch.99), "
-            "trade_program (Ch.99 program driving the surcharge), rate_source, risk_score\n"
-            + json.dumps(tariff_breakdown, default=str)
-        )
-        sections.append(breakdown_note)
-    if ch99_summary.get("n_adjusted"):
-        sections.append(f"CHAPTER 99 SUMMARY\n{json.dumps(ch99_summary, default=str)}")
-    if summary:
+    structured_bundle = _format_analysis_bundle(analysis)
+    if structured_bundle:
+        sections.append(f"LATEST ANALYSIS BUNDLE\n{structured_bundle}")
+    elif summary:
         sections.append(f"ANALYSIS NARRATIVE\n{summary}")
+    last_sql = context.get("last_sql_result")
+    if last_sql:
+        sql_excerpt = {
+            "sql": last_sql.get("sql"),
+            "row_count": last_sql.get("row_count"),
+            "preview_rows": last_sql.get("records", [])[:3],
+        }
+        sections.append(f"LAST SQL RESULT\n{json.dumps(sql_excerpt, default=str)}")
     sections.append(f"RISK SCORE METHODOLOGY\n{RISK_METHOD_SUMMARY}")
     sections.append(f"RECENT CHAT\n{json.dumps(context.get('recent_chat', []), default=str)}")
     sections.append(f"USER QUESTION\n{question}")
@@ -331,17 +377,32 @@ def answer_question_with_context(question: str, deployment_id: str, context: dic
         extra={"question": question, "has_analysis": context.get("latest_analysis") is not None},
     )
     start = time.perf_counter()
-    response = openai.chat.completions.create(
+    stream = openai.chat.completions.create(
         model=deployment_id,
         messages=[
             {"role": "system", "content": QA_SYSTEM_PROMPT},
             {"role": "user", "content": user_message},
         ],
+        stream=True,
     )
-    content = response.choices[0].message.content or ""
+    full_text = ""
+    for chunk in stream:
+        delta = chunk.choices[0].delta.content if chunk.choices and chunk.choices[0].delta else None
+        if not delta:
+            continue
+        full_text += delta
+        if stream_placeholder is not None:
+            stream_placeholder.markdown(
+                f"<div class='bubble-label'>Assistant</div>"
+                f"<div class='bubble-bot'>{full_text}▌</div>",
+                unsafe_allow_html=True,
+            )
+    if stream_placeholder is not None:
+        stream_placeholder.empty()
+
     duration_ms = round((time.perf_counter() - start) * 1000, 1)
     logger.info(
         "Contextual answer generated",
-        extra={"duration_ms": duration_ms, "chars": len(content)},
+        extra={"duration_ms": duration_ms, "chars": len(full_text)},
     )
-    return content.strip(), {"mode": "context"}
+    return full_text.strip(), {"mode": "context"}

@@ -31,10 +31,98 @@ from logger import setup_logger
 
 logger = setup_logger(__name__)
 
+# Static latitude/longitude map reused by multiple visualisations; defined once to
+# avoid rebuilding the same literal dictionary on every Streamlit rerun.
+COUNTRY_COORDINATES = {
+    "Afghanistan": (33.9, 67.7),
+    "Albania": (41.1, 20.2),
+    "Algeria": (28.0, 1.7),
+    "Angola": (-11.2, 17.9),
+    "Argentina": (-38.4, -63.6),
+    "Armenia": (40.1, 45.0),
+    "Australia": (-25.3, 133.8),
+    "Austria": (47.5, 14.6),
+    "Azerbaijan": (40.1, 47.6),
+    "Bangladesh": (23.7, 90.4),
+    "Belgium": (50.8, 4.5),
+    "Bolivia": (-16.3, -63.6),
+    "Brazil": (-14.2, -51.9),
+    "Bulgaria": (42.7, 25.5),
+    "Cambodia": (12.6, 104.9),
+    "Cameroon": (7.4, 12.4),
+    "Canada": (56.1, -106.3),
+    "Chad": (15.5, 18.7),
+    "Chile": (-35.7, -71.5),
+    "China": (35.9, 104.2),
+    "Colombia": (4.6, -74.3),
+    "Denmark": (56.3, 9.5),
+    "Ecuador": (-1.8, -78.2),
+    "Egypt": (26.8, 30.8),
+    "Eritrea": (15.2, 39.8),
+    "Ethiopia": (9.1, 40.5),
+    "Finland": (61.9, 25.7),
+    "France": (46.2, 2.2),
+    "Germany": (51.2, 10.5),
+    "Ghana": (7.9, -1.0),
+    "Greece": (39.1, 21.8),
+    "India": (20.6, 79.0),
+    "Indonesia": (-0.8, 113.9),
+    "Iran": (32.4, 53.7),
+    "Iraq": (33.2, 43.7),
+    "Italy": (41.9, 12.6),
+    "Japan": (36.2, 138.3),
+    "Jordan": (30.6, 36.2),
+    "Kazakhstan": (48.0, 66.9),
+    "Kenya": (-0.0, 37.9),
+    "Libya": (26.3, 17.2),
+    "Malaysia": (4.2, 108.0),
+    "Mali": (17.6, -2.0),
+    "Mexico": (23.6, -102.6),
+    "Morocco": (31.8, -7.1),
+    "Netherlands": (52.1, 5.3),
+    "Nicaragua": (12.9, -85.2),
+    "Nigeria": (9.1, 8.7),
+    "Norway": (60.5, 8.5),
+    "Pakistan": (30.4, 69.3),
+    "Peru": (-9.2, -75.0),
+    "Philippines": (12.9, 121.8),
+    "Poland": (51.9, 19.1),
+    "Portugal": (39.4, -8.2),
+    "Romania": (45.9, 24.9),
+    "Russia": (61.5, 105.3),
+    "Saudi Arabia": (23.9, 45.1),
+    "Senegal": (14.5, -14.5),
+    "Singapore": (1.4, 103.8),
+    "Somalia": (5.2, 46.2),
+    "South Africa": (-30.6, 22.9),
+    "South Korea": (35.9, 127.8),
+    "South Sudan": (6.9, 31.3),
+    "Spain": (40.5, -3.7),
+    "Sri Lanka": (7.9, 80.8),
+    "Sudan": (12.9, 30.2),
+    "Sweden": (60.1, 18.6),
+    "Switzerland": (46.8, 8.2),
+    "Syria": (34.8, 38.8),
+    "Taiwan": (23.7, 121.0),
+    "Tanzania": (-6.4, 34.9),
+    "Thailand": (15.9, 100.9),
+    "Turkey": (38.9, 35.2),
+    "Uganda": (1.4, 32.3),
+    "Ukraine": (48.4, 31.2),
+    "United Arab Emirates": (23.4, 53.8),
+    "United Kingdom": (55.4, -3.4),
+    "United States": (37.1, -95.7),
+    "Uruguay": (-32.5, -55.8),
+    "Venezuela": (6.4, -66.6),
+    "Vietnam": (14.1, 108.3),
+    "Yemen": (15.6, 48.5),
+    "Zimbabwe": (-19.0, 29.2),
+}
+
 SUMMARY_SAMPLE_LIMIT = 60
 DISPLAY_COLUMN_MAP = [
     ("country", "Country"),
-    ("risk_score", "Risk Score"),
+    ("corruption_score", "Corruption Score"),
     ("hts_code", "HTS Code"),
     ("product_description", "Product"),
     ("general_duty_rate_text", "Base Rate"),
@@ -230,8 +318,18 @@ def fetch_ch99_for_codes_and_countries(
     return df
 
 
+def _build_ch99_lookup(ch99_df: pd.DataFrame | None) -> dict[tuple[str, str], pd.DataFrame]:
+    """Group Chapter 99 rows by (hts_code, country) for fast lookup."""
+    if ch99_df is None or ch99_df.empty:
+        return {}
+    grouped: dict[tuple[str, str], pd.DataFrame] = {}
+    for (hts_code, country), frame in ch99_df.groupby(["hts_code", "ch99_country"], sort=False):
+        grouped[(hts_code, country)] = frame
+    return grouped
+
+
 def _best_ch99_rule(
-    ch99_df: pd.DataFrame,
+    ch99_lookup: dict[tuple[str, str], pd.DataFrame],
     hts_code: str,
     country: str,
 ) -> dict | None:
@@ -246,13 +344,19 @@ def _best_ch99_rule(
       4. Returns a synthetic rule dict combining Floor + additive so that
          apply_ch99_to_duty can compute max(base + additive, floor).
     """
-    if ch99_df is None or ch99_df.empty:
+    if not ch99_lookup:
         return None
-    mask = ch99_df["hts_code"] == hts_code
-    mask &= (ch99_df["ch99_country"] == country) | (ch99_df["ch99_country"] == "Global")
-    candidates = ch99_df[mask].copy()
-    if candidates.empty:
+
+    frames: list[pd.DataFrame] = []
+    exact = ch99_lookup.get((hts_code, country))
+    if exact is not None:
+        frames.append(exact)
+    global_rows = ch99_lookup.get((hts_code, "Global"))
+    if global_rows is not None:
+        frames.append(global_rows)
+    if not frames:
         return None
+    candidates = frames[0] if len(frames) == 1 else pd.concat(frames, ignore_index=True)
 
     candidates = candidates.sort_values("ch99_match_priority")
 
@@ -486,8 +590,8 @@ def _build_display_table(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
     display_df = df[available].copy().rename(
         columns={src: label for src, label in DISPLAY_COLUMN_MAP if src in available}
     )
-    if "Risk Score" in display_df.columns:
-        display_df["Risk Score"] = display_df["Risk Score"].apply(
+    if "Corruption Score" in display_df.columns:
+        display_df["Corruption Score"] = display_df["Corruption Score"].apply(
             lambda v: f"{float(v):.1f}" if pd.notna(v) else "—"
         )
     if "Effective Rate (%)" in display_df.columns:
@@ -625,11 +729,12 @@ def build_correlation_dataframe(
             "tariff_rows": len(tariff_df),
         },
     )
-    ch99_available = ch99_df is not None and not ch99_df.empty
+    ch99_lookup = _build_ch99_lookup(ch99_df)
+    ch99_available = bool(ch99_lookup)
     if not selected_countries or tariff_df.empty:
         empty_cols = [
             "country",
-            "risk_score",
+            "corruption_score",
             "risk_level",
             "hts_code",
             "product_description",
@@ -655,7 +760,7 @@ def build_correlation_dataframe(
     if country_subset.empty:
         empty_cols = [
             "country",
-            "risk_score",
+            "corruption_score",
             "risk_level",
             "hts_code",
             "product_description",
@@ -757,7 +862,7 @@ def build_correlation_dataframe(
             if base_has_ad_valorem:
                 ch99_summary["n_total"] += 1
 
-            rule = _best_ch99_rule(ch99_df, product_meta["hts_code"], country_name) if ch99_available else None
+            rule = _best_ch99_rule(ch99_lookup, product_meta["hts_code"], country_name) if ch99_available else None
             if rule is not None and base_has_ad_valorem:
                 adjusted_rate = apply_ch99_to_duty(base_duty_rate_obj, rule)
                 if adjusted_rate is not None:
@@ -819,7 +924,7 @@ def build_correlation_dataframe(
             combined_rows.append(
                 {
                     "country": country_name,
-                    "risk_score": country_meta["score"],
+                    "corruption_score": country_meta["score"],
                     "risk_level": country_meta["level"],
                     "country_color": country_meta["color"],
                     "hts_code": product_meta["hts_code"],
@@ -860,7 +965,7 @@ def build_correlation_dataframe(
         logger.info("Combined dataframe empty; returning placeholders")
         empty_cols = [
             "country",
-            "risk_score",
+            "corruption_score",
             "risk_level",
             "hts_code",
             "product_description",
@@ -929,34 +1034,28 @@ def render_correlation_chart(df: pd.DataFrame, mode: str = "ad_valorem") -> go.F
         units = plot_df["specific_unit"].dropna().unique() if "specific_unit" in plot_df.columns else []
         unit_label = units[0].strip() if len(units) == 1 else "unit"
 
-        fig = px.scatter(
-            plot_df,
-            x="risk_score",
-            y="specific_amount",
-            color="country",
-            hover_name="product_description" if "product_description" in plot_df.columns else None,
-            hover_data={
-                "country": True,
-                "risk_score": ":.1f",
-                "risk_level": True,
-                "hts_code": True,
-                "Base Rate": True,
-                "specific_amount": ":.4f",
-                "Trade Program": True,
-            },
-            labels={
-                "risk_score": "Country Risk Score",
-                "specific_amount": f"Duty Amount ({unit_label})",
-            },
-        )
+        fig = go.Figure()
+        countries = plot_df["country"].unique()
+        colors = ["#0B2A4A", "#4F6D7A", "#7AAFDE", "#B5D4F4"]
+        for i, country in enumerate(countries):
+            row = plot_df[plot_df["country"] == country]
+            fig.add_trace(go.Bar(
+                name=country,
+                x=[country],
+                y=row["specific_amount"].values,
+                marker_color=colors[i % len(colors)],
+                text=[f"{v:.4f} {unit_label}" for v in row["specific_amount"].values],
+                textposition="outside",
+            ))
         fig.update_layout(
-            xaxis_title="Country Risk Score",
             yaxis_title=f"Specific Duty Rate ({unit_label})",
-            legend_title="Country",
             template="plotly_white",
             margin=dict(l=10, r=10, t=40, b=10),
+            showlegend=False,
+            bargap=0.35,
+            plot_bgcolor="white",
+            yaxis=dict(gridcolor="#F0F2F5"),
         )
-        fig.update_traces(marker={"size": 12, "line": {"width": 1.5, "color": "rgba(0,0,0,0.25)"}})
         return fig
 
     # --- ad_valorem mode ---
@@ -978,38 +1077,90 @@ def render_correlation_chart(df: pd.DataFrame, mode: str = "ad_valorem") -> go.F
     plot_df["Rate Source"] = plot_df["ch99_applied"].map({True: "Ch.99 adjusted", False: "Base rate"}) if "ch99_applied" in plot_df.columns else "Base rate"
     plot_df["Ch.99 Δ"] = plot_df.apply(_delta_label, axis=1)
 
-    fig = px.scatter(
-        plot_df,
-        x="risk_score",
-        y="ad_valorem_rate",
-        color="country",
-        hover_name="product_description" if "product_description" in plot_df.columns else None,
-        hover_data={
-            "country": True,
-            "risk_score": ":.1f",
-            "hts_code": True,
-            "Base Rate": True,
-            "ad_valorem_rate": ":.2f",
-            "Rate Source": True,
-            "Trade Program": True,
-            "Ch.99 Δ": True,
-        },
-    )
+    has_ch99 = "ch99_applied" in plot_df.columns
+    agg_dict = {
+        "ad_valorem_rate": ("ad_valorem_rate", "first"),
+        "corruption_score": ("corruption_score", "first"),
+        "risk_level": ("risk_level", "first"),
+    }
+    if has_ch99:
+        agg_dict["ch99_applied"] = ("ch99_applied", "first")
+    summary = plot_df.groupby("country", as_index=False).agg(**agg_dict)
+
+    palette = ["#0B2A4A", "#4F6D7A", "#7AAFDE", "#B5D4F4", "#378ADD"]
+
+    fig = go.Figure()
+
+    for i, row in summary.iterrows():
+        ch99 = bool(row.get("ch99_applied", False)) if has_ch99 else False
+        color = palette[i % len(palette)]
+        level = row.get("risk_level", "")
+
+        fig.add_trace(go.Scatter(
+            x=[row["corruption_score"]],
+            y=[row["ad_valorem_rate"]],
+            mode="markers+text",
+            name=row["country"],
+            text=[row["country"]],
+            textposition="top center",
+            textfont=dict(size=13, color=color),
+            marker=dict(
+                size=48,
+                color=color,
+                line=dict(width=2.5, color="white"),
+                symbol="circle",
+            ),
+            hovertemplate=(
+                f"<b>{row['country']}</b><br>"
+                f"Corruption score: {row['corruption_score']:.1f} / 100<br>"
+                f"Effective duty: {row['ad_valorem_rate']:.2f}%<br>"
+                f"Risk level: {level}<br>"
+                f"{'⚠ Ch.99 adjusted' if ch99 else 'Base rate'}"
+                "<extra></extra>"
+            ),
+        ))
+
+        fig.add_annotation(
+            x=row["corruption_score"],
+            y=row["ad_valorem_rate"],
+            text=f"{row['ad_valorem_rate']:.1f}%",
+            showarrow=False,
+            font=dict(size=11, color="white", family="monospace"),
+            yshift=0,
+        )
+
+    max_risk = summary["corruption_score"].max()
+    max_duty = summary["ad_valorem_rate"].max()
+
+
+
     fig.update_layout(
-        xaxis_title="Country Risk Score",
-        yaxis_title="Effective Duty Rate (% ad valorem)",
-        legend_title="Country",
         template="plotly_white",
-        margin=dict(l=10, r=10, t=40, b=10),
+        margin=dict(l=20, r=20, t=40, b=50),
+        plot_bgcolor="white",
+        showlegend=False,
+        xaxis=dict(
+            title="Country corruption score (lower = safer)",
+            gridcolor="#F0F2F5",
+            zeroline=False,
+            range=[-2, max_risk * 1.3],
+            tickfont=dict(size=12),
+        ),
+        yaxis=dict(
+            title="Effective duty rate (%)",
+            gridcolor="#F0F2F5",
+            zeroline=False,
+            ticksuffix="%",
+            range=[-0.5, max_duty * 1.35],
+            tickfont=dict(size=12),
+        ),
     )
-    fig.update_xaxes(tickformat=".1f")
-    fig.update_traces(marker={"size": 12, "line": {"width": 1, "color": "rgba(0,0,0,0.3)"}})
     if "ch99_applied" in plot_df.columns:
         adjusted = plot_df[plot_df["ch99_applied"]]
         if not adjusted.empty:
             fig.add_trace(
                 go.Scatter(
-                    x=adjusted["risk_score"],
+                    x=adjusted["corruption_score"],
                     y=adjusted["ad_valorem_rate"],
                     mode="markers",
                     marker=dict(
@@ -1045,8 +1196,8 @@ def _build_summary_stats(df: pd.DataFrame) -> dict:
         "count_pairs": len(df),
         "countries": sorted(df["country"].unique().tolist()),
         "hts_codes": sorted(df["hts_code"].unique().tolist()),
-        "risk_min": _round_one(df["risk_score"].min()),
-        "risk_max": _round_one(df["risk_score"].max()),
+        "risk_min": _round_one(df["corruption_score"].min()),
+        "risk_max": _round_one(df["corruption_score"].max()),
         "duty_min": float(df["ad_valorem_rate"].min()),
         "duty_max": float(df["ad_valorem_rate"].max()),
     }
@@ -1081,18 +1232,18 @@ def _derive_headline(
         return f"{row['country']} is your only {risk_level} option for HTS {row['hts_code']} with {duty_text}."
 
     duties = df["ad_valorem_rate"]
-    risk_scores = df["risk_score"]
-    if duties.nunique(dropna=False) == 1 and risk_scores.nunique(dropna=False) == 1:
+    corruption_scores = df["corruption_score"]
+    if duties.nunique(dropna=False) == 1 and corruption_scores.nunique(dropna=False) == 1:
         duty_val = _round_display(duties.iloc[0])
-        risk_val = round(float(risk_scores.iloc[0]), 1)
+        risk_val = round(float(corruption_scores.iloc[0]), 1)
         return (
             f"All {len(unique_pairs)} selections share the same profile: {duty_val}% duty and risk ≈ {risk_val}."
         )
 
     min_duty = duties.min()
     best_by_duty = df[duties == min_duty]
-    min_risk = best_by_duty["risk_score"].min()
-    best_rows = best_by_duty[best_by_duty["risk_score"] == min_risk]
+    min_risk = best_by_duty["corruption_score"].min()
+    best_rows = best_by_duty[best_by_duty["corruption_score"] == min_risk]
     best_countries = sorted(best_rows["country"].unique().tolist())
     best_codes = sorted(best_rows["hts_code"].unique().tolist())
     duty_display = _round_display(min_duty)
@@ -1241,6 +1392,89 @@ def maybe_run_analysis(
     )
 
     try:
+        def ll_to_xy(lat, lon, w=500, h=250):
+            x = round((lon + 180) * (w / 360), 1)
+            y = round((90 - lat) * (h / 180), 1)
+            return x, y
+
+        pts = []
+        for ctry in countries:
+            if ctry in COUNTRY_COORDINATES:
+                lat, lon = COUNTRY_COORDINATES[ctry]
+                x, y = ll_to_xy(lat, lon)
+                pts.append({"name": ctry, "x": x, "y": y})
+
+        paths_svg = ""
+        travelers_svg = ""
+        labels_svg = ""
+        style_css = ""
+
+        for i in range(len(pts) - 1):
+            x1, y1 = pts[i]["x"], pts[i]["y"]
+            x2, y2 = pts[i+1]["x"], pts[i+1]["y"]
+            mx = round((x1+x2)/2, 1)
+            my = round(min(y1,y2) - 40, 1)
+            paths_svg += f'<path id="p{i}" d="M{x1},{y1} Q{mx},{my} {x2},{y2}" fill="none" stroke="#B5D4F4" stroke-width="1.5" stroke-dasharray="5 3" opacity="0.8"/>'
+            delay = round(i * 0.6, 1)
+            style_css += f".t{i}{{offset-path:path('M{x1},{y1} Q{mx},{my} {x2},{y2}');animation:mv{i} 2.4s ease-in-out {delay}s infinite;}}"
+            style_css += f"@keyframes mv{i}{{0%{{offset-distance:0%;opacity:1}}85%{{offset-distance:100%;opacity:1}}100%{{offset-distance:100%;opacity:0}}}}"
+            travelers_svg += f'<circle class="t{i}" r="5" fill="#378ADD" stroke="white" stroke-width="1.5"/>'
+
+        for pt in pts:
+            paths_svg += f'<circle cx="{pt["x"]}" cy="{pt["y"]}" r="6" fill="#0B2A4A" stroke="white" stroke-width="2"/>'
+            labels_svg += f'<text x="{pt["x"]}" y="{pt["y"]-10}" text-anchor="middle" font-size="9" font-family="sans-serif" fill="#0B2A4A" font-weight="bold">{pt["name"]}</text>'
+
+        country_list = ", ".join(countries)
+        globe_html = f"""<div style="background:#EAF2FB;border-radius:12px;padding:18px 20px;border:0.5px solid #B5D4F4;margin:8px 0;">
+<p style="font-size:13px;color:#0B2A4A;font-weight:500;margin-bottom:10px;text-align:center;">Analyzing {country_list}…</p>
+<svg viewBox="0 0 500 250" width="100%" style="border-radius:8px;background:#EAF2FB;">
+<style>{style_css}</style>
+<rect width="500" height="250" fill="#E1EDF8" rx="8"/>
+<line x1="0" y1="125" x2="500" y2="125" stroke="#C5D9ED" stroke-width="0.5"/>
+<line x1="250" y1="0" x2="250" y2="250" stroke="#C5D9ED" stroke-width="0.5"/>
+{paths_svg}{travelers_svg}{labels_svg}
+</svg>
+<p style="font-size:11px;color:#4F6D7A;text-align:center;margin-top:8px;">Querying HTS database &middot; Scoring V-Dem indicators &middot; Generating analysis</p>
+</div>"""
+
+        pts_3d = []
+        for ctry in countries:
+            if ctry in COUNTRY_COORDINATES:
+                lat, lon = COUNTRY_COORDINATES[ctry]
+                pts_3d.append({"name": ctry, "lat": lat, "lon": lon})
+
+        if placeholder:
+            import time
+            thinking_steps = [
+                (f"Identifying selected countries: <strong>{', '.join(countries)}</strong>", 0.8),
+                (f"Querying HTS SQLite database for: <strong>{', '.join(products)}</strong>", 1.0),
+                ("Parsing general duty rates and checking Chapter 99 tariff adjustments...", 1.0),
+                ("Loading V-Dem indicators and computing corruption scores per country...", 1.0),
+                ("Building correlation matrix of corruption scores vs effective duty rates...", 0.8),
+                ("Sending data to <strong>Azure OpenAI GPT-5-mini</strong> for compliance narrative...", 0.8),
+                ("<em style='color:#4F6D7A;'>Generating actionable insights and recommendations...</em>", 0.5),
+            ]
+
+            def render_thinking(steps_so_far):
+                rows = ""
+                for idx, (text, _) in enumerate(steps_so_far):
+                    num = str(idx + 1).zfill(2)
+                    rows += f"<div style='display:flex;gap:10px;align-items:flex-start;margin-bottom:8px;'><span style='color:#0B2A4A;font-weight:600;font-size:11px;min-width:20px;margin-top:2px;'>{num}</span><span style='font-size:13px;color:#374151;line-height:1.6;'>{text}</span></div>"
+                placeholder.markdown(f"""
+<div style='background:#F8FAFC;border:0.5px solid #E2E8F0;border-radius:12px;padding:18px 20px;margin:8px 0;'>
+  <div style='display:flex;align-items:center;gap:8px;margin-bottom:14px;'>
+    <div style='width:8px;height:8px;border-radius:50%;background:#0B2A4A;'></div>
+    <span style='font-size:13px;font-weight:500;color:#0B2A4A;'>Thinking...</span>
+  </div>
+  {rows}
+</div>""", unsafe_allow_html=True)
+
+            shown = []
+            for step in thinking_steps:
+                shown.append(step)
+                render_thinking(shown)
+                time.sleep(step[1])
+
         with st.spinner("Running analysis..."):
             tariff_df = fetch_tariffs_for_codes(conn, products)
             ch99_df = fetch_ch99_for_codes_and_countries(conn, products, countries)
