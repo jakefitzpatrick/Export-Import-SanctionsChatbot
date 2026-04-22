@@ -691,6 +691,7 @@ def fetch_tariffs_for_codes(
     ]
     df["duty_notes"] = [rate.notes for rate in parsed_rates]
     df["duty_component_summary"] = [_summarize_components(rate) for rate in parsed_rates]
+    df["parsed_duty_rate"] = parsed_rates
     df["special_duty_rule"] = [
         parse_special_duty(text) if text else None for text in df["special_duty_rate"]
     ]
@@ -811,7 +812,9 @@ def build_correlation_dataframe(
             duty_kind = product_meta["duty_kind"]
             has_specific = product_meta["has_specific"]
 
-            base_duty_rate_obj = parse_general_duty(base_general_text)
+            base_duty_rate_obj = product_meta.get("parsed_duty_rate")
+            if base_duty_rate_obj is None:
+                base_duty_rate_obj = parse_general_duty(base_general_text)
             if base_duty_rate_obj:
                 duty_kind = base_duty_rate_obj.kind or duty_kind
                 if base_duty_rate_obj.specific_amount is not None:
