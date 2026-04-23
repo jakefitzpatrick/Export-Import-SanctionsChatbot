@@ -4,7 +4,7 @@ __pycache__/
 *.jsonl
 .rag_cache/
 *.npy
-*.csv
+# *.csv
 !vdem_risk_scored.csv
 !data/vdem_latest.csv
 *.ZIP
