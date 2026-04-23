@@ -1447,7 +1447,6 @@ def maybe_run_analysis(
                 pts_3d.append({"name": ctry, "lat": lat, "lon": lon})
 
         if placeholder:
-            import time
             thinking_steps = [
                 (f"Identifying selected countries: <strong>{', '.join(countries)}</strong>", 0.8),
                 (f"Querying HTS SQLite database for: <strong>{', '.join(products)}</strong>", 1.0),
@@ -1472,11 +1471,12 @@ def maybe_run_analysis(
   {rows}
 </div>""", unsafe_allow_html=True)
 
+            import time
             shown = []
             for step in thinking_steps:
                 shown.append(step)
                 render_thinking(shown)
-                time.sleep(step[1])
+                time.sleep(0.4)
 
         with st.spinner("Running analysis..."):
             tariff_df = fetch_tariffs_for_codes(conn, products)

@@ -343,6 +343,14 @@ def load_product_options(_conn: sqlite3.Connection) -> list[tuple[str, str]]:
 
 def main() -> None:
     st.set_page_config(page_title="ImportInsight AI", layout="wide")
+    st.markdown("""
+    <style>
+    [data-testid="stAppViewContainer"] { opacity: 1 !important; transition: none !important; }
+    [data-testid="stAppViewBlockContainer"] { opacity: 1 !important; transition: none !important; }
+    div[data-stale="true"] { opacity: 1 !important; transition: none !important; }
+    div[data-stale="false"] { opacity: 1 !important; transition: none !important; }
+    </style>
+    """, unsafe_allow_html=True)
     st.markdown(_format_css(), unsafe_allow_html=True)
     st.markdown("""<style>
 [data-testid="stBottom"] > div {
@@ -875,17 +883,74 @@ div
                         else None
                     )
                     best_rate = f"{best_rate_value:.1f}%" if isinstance(best_rate_value, (int, float)) and pd.notna(best_rate_value) else "N/A"
+                    # Re-rank: sort by duty rate first, then corruption score as tiebreaker
+                    duty_by_country_map = {}
+                    if chart_df_summary is not None and not chart_df_summary.empty and rate_column and country_col:
+                        for _, dr in chart_df_summary.iterrows():
+                            cname = dr.get(country_col)
+                            rval = dr.get("_effective_rate_numeric")
+                            if cname and pd.notna(rval):
+                                try:
+                                    duty_by_country_map[cname] = float(rval)
+                                except (TypeError, ValueError):
+                                    pass
+                    # Sort risk_snapshot by corruption score only — duty map unreliable when all equal
+                    # First try to use duty rates, fall back to pure corruption score sort
+                    country_min_duty = {}
+                    for _, dr in chart_df_summary.iterrows():
+                        # Try all possible country column names
+                        cname = None
+                        for col_try in ["Country", "country", "COUNTRY"]:
+                            if col_try in dr.index and pd.notna(dr[col_try]):
+                                cname = str(dr[col_try]).strip()
+                                break
+                        rval = dr.get("_effective_rate_numeric") if "_effective_rate_numeric" in chart_df_summary.columns else None
+                        if cname and rval is not None and pd.notna(rval):
+                            try:
+                                fval = float(rval)
+                                if cname not in country_min_duty or fval < country_min_duty[cname]:
+                                    country_min_duty[cname] = fval
+                            except (TypeError, ValueError):
+                                pass
+                    duty_by_country_map = country_min_duty
+                    # When duties are equal or missing, sort purely by corruption score
+                    duty_vals = list(duty_by_country_map.values())
+                    all_duties_equal = len(set(round(v, 2) for v in duty_vals)) <= 1 if duty_vals else True
+                    if all_duties_equal:
+                        best_snap_sorted = sorted(risk_snapshot, key=lambda s: s['score'])
+                    else:
+                        best_snap_sorted = sorted(
+                            risk_snapshot,
+                            key=lambda s: (round(duty_by_country_map.get(s['country'], 9999), 4), round(s['score'], 4))
+                        )
+                    best_risk_snap = best_snap_sorted[0] if best_snap_sorted else (risk_snapshot[0] if risk_snapshot else None)
+                    true_best_country = best_risk_snap['country'] if best_risk_snap else best_country
+                    true_best_rate = f"{duty_by_country_map[true_best_country]:.1f}%" if true_best_country in duty_by_country_map else best_rate
+                    best_risk_score = round(best_risk_snap['score'], 1) if best_risk_snap else "N/A"
+                    best_risk_level = best_risk_snap['level'] if best_risk_snap else "N/A"
+                    best_country = true_best_country
+                    best_rate = true_best_rate
                     st.markdown(f"""
-                    <div style='display:flex;gap:10px;margin-bottom:14px;align-items:stretch;'>
-                        <div style='flex:1;background:{risk_bg};border-radius:12px;padding:12px 16px;border:1px solid {risk_color}22;'>
-                            <div style='font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:{risk_color};margin-bottom:4px;'>Overall Risk</div>
-                            <div style='font-size:13px;font-weight:600;color:{risk_color};'>{risk_label}</div>
-                            <div style='font-size:11px;color:#64748B;margin-top:2px;'>Avg score: {avg_score:.1f} / 100</div>
+                    <div style='border:2px solid #16A34A;border-radius:14px;padding:18px 22px;margin-bottom:14px;background:#ffffff;position:relative;overflow:hidden;box-shadow:0 4px 20px rgba(22,163,74,0.12);'>
+                        <div style='position:absolute;top:0;left:0;right:0;height:3px;background:linear-gradient(90deg,#0B2A4A,#378ADD);'></div>
+                        <div style='display:inline-flex;align-items:center;gap:6px;padding:3px 12px;background:#F0FDF4;border:1px solid #86EFAC;border-radius:4px;font-size:11px;font-weight:600;color:#15803D;margin-bottom:10px;'>
+                            <span style='color:#f59e0b;'>★</span> Best from your selection
                         </div>
-                        <div style='flex:1;background:#EFF6FF;border-radius:12px;padding:12px 16px;border:1px solid #3B82F622;'>
-                            <div style='font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#1D4ED8;margin-bottom:4px;'>Lowest Duty</div>
-                            <div style='font-size:13px;font-weight:600;color:#1D4ED8;'>⭑ {best_country}</div>
-                            <div style='font-size:11px;color:#64748B;margin-top:2px;'>Rate: {best_rate}</div>
+                        <div style='font-size:26px;font-weight:700;color:#0B2A4A;letter-spacing:-0.03em;margin-bottom:2px;'>{true_best_country}</div>
+                        <div style='font-size:12px;color:#64748B;margin-bottom:14px;'>Lowest duty + lowest corruption score among your {len(risk_snapshot)} markets</div>
+                        <div style='display:grid;grid-template-columns:repeat(3,1fr);gap:10px;'>
+                            <div style='background:#F8FAFC;border-radius:8px;padding:10px 14px;'>
+                                <div style='font-size:10px;color:#94A3B8;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.07em;'>Effective duty</div>
+                                <div style='font-size:18px;font-weight:700;color:#1E8449;'>{true_best_rate}</div>
+                            </div>
+                            <div style='background:#F8FAFC;border-radius:8px;padding:10px 14px;'>
+                                <div style='font-size:10px;color:#94A3B8;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.07em;'>Corruption score</div>
+                                <div style='font-size:18px;font-weight:700;color:#1D4ED8;'>{best_risk_score} <span style='font-size:12px;color:#94A3B8;font-weight:400;'>/ 100</span></div>
+                            </div>
+                            <div style='background:#F8FAFC;border-radius:8px;padding:10px 14px;'>
+                                <div style='font-size:10px;color:#94A3B8;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.07em;'>Risk level</div>
+                                <div style='font-size:18px;font-weight:700;color:#1E8449;'>{best_risk_level}</div>
+                            </div>
                         </div>
                     </div>
                     """, unsafe_allow_html=True)
