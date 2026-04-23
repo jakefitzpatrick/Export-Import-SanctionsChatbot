@@ -13,8 +13,7 @@ import plotly.graph_objects as go
 import streamlit as st
 import streamlit.components.v1 as components
 
-from analysis import maybe_run_analysis, queue_analysis_request, render_correlation_chart
-from ranker import maybe_run_best_countries
+from analysis import maybe_run_analysis, queue_analysis_request
 from chat import answer_question, append_message
 from risk_model import get_risk_df
 from session import enforce_selection_limit, reset_app_state
@@ -344,6 +343,14 @@ def load_product_options(_conn: sqlite3.Connection) -> list[tuple[str, str]]:
 
 def main() -> None:
     st.set_page_config(page_title="ImportInsight AI", layout="wide")
+    st.markdown("""
+    <style>
+    [data-testid="stAppViewContainer"] { opacity: 1 !important; transition: none !important; }
+    [data-testid="stAppViewBlockContainer"] { opacity: 1 !important; transition: none !important; }
+    div[data-stale="true"] { opacity: 1 !important; transition: none !important; }
+    div[data-stale="false"] { opacity: 1 !important; transition: none !important; }
+    </style>
+    """, unsafe_allow_html=True)
     st.markdown(_format_css(), unsafe_allow_html=True)
     st.markdown("""<style>
 [data-testid="stBottom"] > div {
@@ -435,11 +442,6 @@ div
 
     # do not auto-refill selections - let user control them
 
-    # Apply pending country selection from best-countries ranker before the widget renders
-    _pending = st.session_state.pop("best_countries_pending", None)
-    if _pending:
-        st.session_state["selected_countries"] = _pending
-
     selected_countries, country_trimmed = enforce_selection_limit(
         "selected_countries",
         MAX_COUNTRY_SELECTION,
@@ -497,7 +499,6 @@ div
         st.markdown("<hr>", unsafe_allow_html=True)
         st.markdown("<p style='font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:0.12em;color:rgba(255,255,255,0.45);margin-bottom:6px;margin-top:4px;'>Countries</p>", unsafe_allow_html=True)
         st.multiselect("Countries", options=country_options, key="selected_countries", max_selections=MAX_COUNTRY_SELECTION, label_visibility="hidden")
-
         st.markdown("<p style='font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:0.12em;color:rgba(255,255,255,0.45);margin-top:14px;margin-bottom:6px;'>HTS Products</p>", unsafe_allow_html=True)
         if display_options:
             all_codes = [opt.split(" — ")[0].strip() for opt in display_options]
@@ -665,23 +666,6 @@ div
             if selected_prods:
                 for i, prod in enumerate(selected_prods):
                     st.markdown(f"<div style='font-size:11px;color:rgba(255,255,255,0.7);padding:3px 0;'>✓ {prod}</div>", unsafe_allow_html=True)
-
-        _bc_inflight = st.session_state.get("best_countries_inflight", False)
-        _bc_codes = [code_map[label] for label in st.session_state.get("selected_products_display", []) if label in code_map]
-        _bc_disabled = _bc_inflight or not _bc_codes or bool(st.session_state.get("analysis_inflight"))
-        if st.button(
-            "Finding best countries…" if _bc_inflight else "✦ Find Best Countries",
-            key="btn_find_best_countries",
-            disabled=_bc_disabled,
-            help="Auto-select the 3 best countries for this HTS code based on tariff rates, corruption risk, and trade-flow reasoning.",
-        ):
-            st.session_state["best_countries_request"] = {"hts_code": _bc_codes[0]}
-            st.rerun()
-        if not _bc_codes and not _bc_inflight:
-            st.markdown("<div style='font-size:10px;color:rgba(255,255,255,0.3);padding:2px 0;'>Select an HTS code above to enable</div>", unsafe_allow_html=True)
-        if st.session_state.get("best_countries_error"):
-            st.markdown(f"<div style='font-size:10px;color:#f87171;padding:4px 0;'>{st.session_state.pop('best_countries_error')}</div>", unsafe_allow_html=True)
-
         st.markdown("<hr>", unsafe_allow_html=True)
         with st.expander("About", expanded=False):
             st.caption("ImportInsight AI translates your prompt into SQL and returns the actual HTS rows.")
@@ -753,25 +737,6 @@ div
                 st.warning("Select at least one country and one product before running analysis.")
         if st.session_state.get("analysis_inflight"):
             st.caption("Running analysis…")
-        if st.session_state.get("best_countries_inflight"):
-            st.caption("Finding best countries…")
-        bc_result = st.session_state.get("best_countries_rationale")
-        if bc_result and bc_result.get("selected"):
-            _bc_hts = bc_result.get("hts_code", "")
-            _bc_selected = bc_result.get("selected", [])
-            _bc_rationale = bc_result.get("rationale", {})
-            _bc_parts = []
-            for c in _bc_selected:
-                reason = _bc_rationale.get(c, "")
-                _bc_parts.append(f"<b>{c}</b>{': ' + reason if reason else ''}")
-            _bc_body = " · ".join(_bc_parts)
-            st.markdown(
-                f"<div style='font-size:11px;background:#EFF6FF;border-left:3px solid #4F8FB8;"
-                f"border-radius:6px;padding:8px 12px;margin-top:4px;color:#1E3A5F;'>"
-                f"<span style='color:#1D4ED8;font-weight:600;'>Auto-selected for {_bc_hts}:</span> "
-                f"{_bc_body}</div>",
-                unsafe_allow_html=True,
-            )
     analysis_stream_placeholder: st.delta_generator.DeltaGenerator | None = None
     chat_feed = st.container(height=480, border=False)
     composer = st.container()
@@ -909,41 +874,73 @@ div
                         risk_color = "#1E8449"
                         risk_bg = "#D5F5E3"
                     country_col = "Country" if "Country" in chart_df_summary.columns else None
-                    specific_chart_data_msg = msg.get("specific_chart_data") or []
-                    if lowest_duty_row is not None and country_col:
-                        best_country = lowest_duty_row[country_col]
-                        best_rate_value = lowest_duty_row.get("_effective_rate_numeric")
-                        best_rate = f"{best_rate_value:.1f}%" if isinstance(best_rate_value, (int, float)) and pd.notna(best_rate_value) else "N/A"
-                    elif specific_chart_data_msg:
-                        # All rates are specific — surface the raw rate text instead
-                        best_country = specific_chart_data_msg[0].get("country", "N/A")
-                        best_rate = specific_chart_data_msg[0].get("rate_primary") or specific_chart_data_msg[0].get("general_duty_rate_text") or "See table"
-                    else:
-                        best_country = "N/A"
-                        best_rate = "N/A"
+                    best_country = (
+                        lowest_duty_row[country_col] if (lowest_duty_row is not None and country_col) else "N/A"
+                    )
+                    best_rate_value = (
+                        lowest_duty_row["_effective_rate_numeric"]
+                        if lowest_duty_row is not None and "_effective_rate_numeric" in lowest_duty_row
+                        else None
+                    )
+                    best_rate = f"{best_rate_value:.1f}%" if isinstance(best_rate_value, (int, float)) and pd.notna(best_rate_value) else "N/A"
+                    # Build duty map directly from chart_df_summary
+                    duty_by_country_map = {}
+                    if chart_df_summary is not None and not chart_df_summary.empty and "_effective_rate_numeric" in chart_df_summary.columns and "Country" in chart_df_summary.columns:
+                        for _, dr in chart_df_summary.iterrows():
+                            cname = str(dr["Country"]).strip() if pd.notna(dr["Country"]) else None
+                            rval = dr["_effective_rate_numeric"]
+                            if cname and pd.notna(rval):
+                                try:
+                                    fval = float(rval)
+                                    if cname not in duty_by_country_map or fval < duty_by_country_map[cname]:
+                                        duty_by_country_map[cname] = fval
+                                except (TypeError, ValueError):
+                                    pass
+                    # Always sort: duty first, then corruption score as tiebreaker
+                    import sys
+                    print("DEBUG duty_by_country_map:", duty_by_country_map, file=sys.stderr)
+                    best_snap_sorted = sorted(
+                        risk_snapshot,
+                        key=lambda s: (round(duty_by_country_map.get(s['country'], 9999), 2), round(s['score'], 2))
+                    )
+                    print("DEBUG sorted order:", [(s['country'], duty_by_country_map.get(s['country'], 9999), s['score']) for s in best_snap_sorted], file=sys.stderr)
+                    best_risk_snap = best_snap_sorted[0] if best_snap_sorted else (risk_snapshot[0] if risk_snapshot else None)
+                    true_best_country = best_risk_snap['country'] if best_risk_snap else best_country
+                    true_best_rate = f"{duty_by_country_map[true_best_country]:.1f}%" if true_best_country in duty_by_country_map else best_rate
+                    best_risk_score = round(best_risk_snap['score'], 1) if best_risk_snap else "N/A"
+                    best_risk_level = best_risk_snap['level'] if best_risk_snap else "N/A"
+                    best_country = true_best_country
+                    best_rate = true_best_rate
                     st.markdown(f"""
-                    <div style='display:flex;gap:10px;margin-bottom:14px;align-items:stretch;'>
-                        <div style='flex:1;background:{risk_bg};border-radius:12px;padding:12px 16px;border:1px solid {risk_color}22;'>
-                            <div style='font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:{risk_color};margin-bottom:4px;'>Overall Risk</div>
-                            <div style='font-size:13px;font-weight:600;color:{risk_color};'>{risk_label}</div>
-                            <div style='font-size:11px;color:#64748B;margin-top:2px;'>Avg score: {avg_score:.1f} / 100</div>
+                    <div style='border:2px solid #16A34A;border-radius:14px;padding:18px 22px;margin-bottom:14px;background:#ffffff;position:relative;overflow:hidden;box-shadow:0 4px 20px rgba(22,163,74,0.12);'>
+                        <div style='position:absolute;top:0;left:0;right:0;height:3px;background:linear-gradient(90deg,#0B2A4A,#378ADD);'></div>
+                        <div style='display:inline-flex;align-items:center;gap:6px;padding:3px 12px;background:#F0FDF4;border:1px solid #86EFAC;border-radius:4px;font-size:11px;font-weight:600;color:#15803D;margin-bottom:10px;'>
+                            <span style='color:#f59e0b;'>★</span> Best from your selection
                         </div>
-                        <div style='flex:1;background:#EFF6FF;border-radius:12px;padding:12px 16px;border:1px solid #3B82F622;'>
-                            <div style='font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:#1D4ED8;margin-bottom:4px;'>Lowest Duty</div>
-                            <div style='font-size:13px;font-weight:600;color:#1D4ED8;'>⭑ {best_country}</div>
-                            <div style='font-size:11px;color:#64748B;margin-top:2px;'>Rate: {best_rate}</div>
+                        <div style='font-size:26px;font-weight:700;color:#0B2A4A;letter-spacing:-0.03em;margin-bottom:2px;'>{true_best_country}</div>
+                        <div style='font-size:12px;color:#64748B;margin-bottom:14px;'>Lowest duty + lowest corruption score among your {len(risk_snapshot)} markets</div>
+                        <div style='display:grid;grid-template-columns:repeat(3,1fr);gap:10px;'>
+                            <div style='background:#F8FAFC;border-radius:8px;padding:10px 14px;'>
+                                <div style='font-size:10px;color:#94A3B8;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.07em;'>Effective duty</div>
+                                <div style='font-size:18px;font-weight:700;color:#1E8449;'>{true_best_rate}</div>
+                            </div>
+                            <div style='background:#F8FAFC;border-radius:8px;padding:10px 14px;'>
+                                <div style='font-size:10px;color:#94A3B8;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.07em;'>Corruption score</div>
+                                <div style='font-size:18px;font-weight:700;color:#1D4ED8;'>{best_risk_score} <span style='font-size:12px;color:#94A3B8;font-weight:400;'>/ 100</span></div>
+                            </div>
+                            <div style='background:#F8FAFC;border-radius:8px;padding:10px 14px;'>
+                                <div style='font-size:10px;color:#94A3B8;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.07em;'>Risk level</div>
+                                <div style='font-size:18px;font-weight:700;color:#1E8449;'>{best_risk_level}</div>
+                            </div>
                         </div>
                     </div>
                     """, unsafe_allow_html=True)
 
-                specific_chart_data_tabs = msg.get("specific_chart_data") or []
-                has_specific_tab = bool(specific_chart_data_tabs)
-                has_tabs = fig_payload or risk_snapshot or chart_data or has_specific_tab
+                has_tabs = fig_payload or risk_snapshot or chart_data
                 if has_tabs:
                     tab_labels = []
                     if risk_snapshot: tab_labels.append("◎ Corruption Score")
                     if fig_payload: tab_labels.append("∿ Graph")
-                    if has_specific_tab: tab_labels.append("⊞ Specific Duty")
                     if chart_data: tab_labels.append("≡ Data")
                     tab_labels.append("◈ Analysis")
                     tabs = st.tabs(tab_labels)
@@ -987,19 +984,87 @@ div
                     graph_tab_idx = 1 if risk_snapshot else 0
                     if fig_payload:
                         with tabs[graph_tab_idx]:
-                            fig = go.Figure(fig_payload)
-                            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-                    specific_tab_idx = graph_tab_idx + (1 if fig_payload else 0)
-                    if has_specific_tab:
-                        with tabs[specific_tab_idx]:
-                            spec_df = pd.DataFrame(specific_chart_data_tabs)
-                            spec_fig = render_correlation_chart(spec_df, mode="specific")
-                            if spec_fig:
-                                st.plotly_chart(spec_fig, use_container_width=True, config={"displayModeBar": False})
-                                st.caption("Specific (per-unit) duties cannot be directly compared to ad-valorem rates. Values shown in native units ($/kg, ¢/unit, etc.).")
+                            chart_df_for_matrix = pd.DataFrame(msg.get("chart_data", []), columns=msg.get("chart_columns", []))
+                            risk_snap_for_matrix = msg.get("risk_snapshot") or []
+                            if not chart_df_for_matrix.empty and "Country" in chart_df_for_matrix.columns and risk_snap_for_matrix:
+                                rate_col_m = "Effective Rate (%)" if "Effective Rate (%)" in chart_df_for_matrix.columns else None
+                                duty_map_m = {}
+                                if rate_col_m:
+                                    for _, mr in chart_df_for_matrix.iterrows():
+                                        cn = mr.get("Country")
+                                        rv = mr.get(rate_col_m)
+                                        if cn and rv is not None:
+                                            try:
+                                                fv = float(str(rv).replace("%","").strip())
+                                                if cn not in duty_map_m or fv < duty_map_m[cn]:
+                                                    duty_map_m[cn] = fv
+                                            except (ValueError, TypeError):
+                                                pass
+                                import plotly.graph_objects as go_m
+                                matrix_fig = go_m.Figure()
+                                colors_m = ["#1a5ccc","#0f6e56","#e74c3c","#8b5cf6","#f59e0b"]
+                                max_duty_m = max(duty_map_m.values()) if duty_map_m else 20
+                                max_risk_m = max(s["score"] for s in risk_snap_for_matrix)
+                                mid_duty = max_duty_m / 2
+                                mid_risk = max_risk_m / 2
+                                def _quadrant_color(risk_score, duty_val, mid_r, mid_d):
+                                    low_risk = risk_score <= mid_r
+                                    low_duty = duty_val <= mid_d
+                                    if low_risk and low_duty: return "#1a5ccc"
+                                    if not low_risk and low_duty: return "#f59e0b"
+                                    if low_risk and not low_duty: return "#0f6e56"
+                                    return "#e74c3c"
+                                for i, snap in enumerate(risk_snap_for_matrix):
+                                    c = snap["country"]
+                                    duty_v = duty_map_m.get(c)
+                                    if duty_v is None:
+                                        continue
+                                    bubble_color = _quadrant_color(snap["score"], duty_v, mid_risk, mid_duty)
+                                    matrix_fig.add_trace(go_m.Scatter(
+                                        x=[snap["score"]], y=[duty_v],
+                                        mode="markers+text",
+                                        name=c,
+                                        text=[c],
+                                        textposition="top center",
+                                        textfont=dict(size=12, color=bubble_color),
+                                        marker=dict(size=40, color=bubble_color, line=dict(width=2, color="white")),
+                                        hovertemplate=f"<b>{c}</b><br>Risk score: {snap['score']:.1f}/100<br>Duty: {duty_v:.1f}%<extra></extra>"
+                                    ))
+                                    matrix_fig.add_annotation(x=snap["score"], y=duty_v,
+                                        text=f"{duty_v:.1f}%", showarrow=False,
+                                        font=dict(size=10, color="white", family="monospace"), yshift=0)
+                                pad_x = max_risk_m * 0.15
+                                pad_y = max_duty_m * 0.25
+                                matrix_fig.update_layout(
+                                    template="plotly_white",
+                                    margin=dict(l=20, r=20, t=10, b=60),
+                                    height=280,
+                                    plot_bgcolor="white",
+                                    showlegend=False,
+                                    shapes=[
+                                        dict(type="line", x0=mid_risk, x1=mid_risk, y0=0, y1=max_duty_m+pad_y,
+                                             line=dict(color="rgba(0,0,0,0.15)", width=1, dash="dash")),
+                                        dict(type="line", x0=0, x1=max_risk_m+pad_x, y0=mid_duty, y1=mid_duty,
+                                             line=dict(color="rgba(0,0,0,0.15)", width=1, dash="dash")),
+                                    ],
+                                    xaxis=dict(title="Corruption score (lower = safer)", gridcolor="#F0F2F5", zeroline=False,
+                                               range=[-2, max_risk_m+pad_x], tickfont=dict(size=12)),
+                                    yaxis=dict(title="Effective duty rate (%)", gridcolor="#F0F2F5", zeroline=False,
+                                               ticksuffix="%", range=[-0.5, max_duty_m+pad_y], tickfont=dict(size=12)),
+                                )
+                                st.plotly_chart(matrix_fig, use_container_width=True)
+                                st.markdown("""
+                                <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:4px;font-size:11px;">
+                                  <div style="padding:6px 10px;background:#e8f4ff;border-radius:6px;color:#1a4a8a;border:0.5px solid #b5d4f4;display:flex;align-items:center;gap:6px;"><span style="width:10px;height:10px;border-radius:50%;background:#1a5ccc;flex-shrink:0"></span>Bottom-left — low risk, low duty &rarr; ideal sourcing</div>
+                                  <div style="padding:6px 10px;background:#fff8e8;border-radius:6px;color:#7a5a0a;border:0.5px solid #f0d090;display:flex;align-items:center;gap:6px;"><span style="width:10px;height:10px;border-radius:50%;background:#f59e0b;flex-shrink:0"></span>Bottom-right — low duty, higher risk &rarr; cost efficient but exposed</div>
+                                  <div style="padding:6px 10px;background:#f0f8f0;border-radius:6px;color:#1a5a2a;border:0.5px solid #90d0a0;display:flex;align-items:center;gap:6px;"><span style="width:10px;height:10px;border-radius:50%;background:#0f6e56;flex-shrink:0"></span>Top-left — safe market, premium duty &rarr; regulatory safe haven</div>
+                                  <div style="padding:6px 10px;background:#fff0f0;border-radius:6px;color:#8a1a1a;border:0.5px solid #f0b0b0;display:flex;align-items:center;gap:6px;"><span style="width:10px;height:10px;border-radius:50%;background:#e74c3c;flex-shrink:0"></span>Top-right — high risk, high duty &rarr; avoid</div>
+                                </div>
+                                """, unsafe_allow_html=True)
                             else:
-                                st.info("No plottable specific-duty data for these selections.")
-                    data_tab_idx = specific_tab_idx + (1 if has_specific_tab else 0)
+                                fig = go.Figure(fig_payload)
+                                st.plotly_chart(fig, width="stretch")
+                    data_tab_idx = graph_tab_idx + (1 if fig_payload else 0)
                     chart_data = msg.get("chart_data")
                     if chart_data:
                         with tabs[data_tab_idx]:
@@ -1013,19 +1078,15 @@ div
                         )
                         duty_exclusions = msg.get("duty_exclusions") or []
                         exclusion_text = msg.get("duty_exclusion_message")
-                        non_specific_excl = [
-                            item for item in duty_exclusions
-                            if item.get("duty_kind") not in ("specific", "mixed")
-                        ]
-                        if exclusion_text and non_specific_excl:
+                        if exclusion_text:
                             st.warning(exclusion_text)
-                        elif non_specific_excl:
+                        elif duty_exclusions:
                             listed = ", ".join(
                                 f"{item.get('hts_code')} ({item.get('general_duty_rate_text')})"
-                                for item in non_specific_excl[:3]
+                                for item in duty_exclusions[:3]
                             )
-                            if len(non_specific_excl) > 3:
-                                listed += f", +{len(non_specific_excl) - 3} more"
+                            if len(duty_exclusions) > 3:
+                                listed += f", +{len(duty_exclusions) - 3} more"
                             st.warning(f"Skipped non-percentage duty rates: {listed}")
                         # Follow-up prompt chips
                         selections = msg.get("selections", {})
@@ -1056,21 +1117,15 @@ div
                     )
                     duty_exclusions = msg.get("duty_exclusions") or []
                     exclusion_text = msg.get("duty_exclusion_message")
-                    # Only warn about exclusions that aren't specific/mixed duties
-                    # (those are shown in the ⊞ Specific Duty tab)
-                    non_specific_exclusions = [
-                        item for item in duty_exclusions
-                        if item.get("duty_kind") not in ("specific", "mixed")
-                    ]
-                    if exclusion_text and non_specific_exclusions:
+                    if exclusion_text:
                         st.warning(exclusion_text)
-                    elif non_specific_exclusions:
+                    elif duty_exclusions:
                         listed = ", ".join(
                             f"{item.get('hts_code')} ({item.get('general_duty_rate_text')})"
-                            for item in non_specific_exclusions[:3]
+                            for item in duty_exclusions[:3]
                         )
-                        if len(non_specific_exclusions) > 3:
-                            listed += f", +{len(non_specific_exclusions) - 3} more"
+                        if len(duty_exclusions) > 3:
+                            listed += f", +{len(duty_exclusions) - 3} more"
                         st.warning(f"Skipped non-percentage duty rates: {listed}")
                 continue
 
@@ -1102,7 +1157,7 @@ div
                 st.info("The last query returned no rows.")
         st.markdown('<div data-anchor="chat-end" id="chat-end"></div>', unsafe_allow_html=True)
 
-    maybe_run_best_countries(conn, deployment_id, risk_df)
+    # analysis runs inside chat_feed above
 
     components.html("""<script>
     (function() {
