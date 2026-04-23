@@ -883,46 +883,27 @@ div
                         else None
                     )
                     best_rate = f"{best_rate_value:.1f}%" if isinstance(best_rate_value, (int, float)) and pd.notna(best_rate_value) else "N/A"
-                    # Re-rank: sort by duty rate first, then corruption score as tiebreaker
+                    # Build duty map directly from chart_df_summary
                     duty_by_country_map = {}
-                    if chart_df_summary is not None and not chart_df_summary.empty and rate_column and country_col:
+                    if chart_df_summary is not None and not chart_df_summary.empty and "_effective_rate_numeric" in chart_df_summary.columns and "Country" in chart_df_summary.columns:
                         for _, dr in chart_df_summary.iterrows():
-                            cname = dr.get(country_col)
-                            rval = dr.get("_effective_rate_numeric")
+                            cname = str(dr["Country"]).strip() if pd.notna(dr["Country"]) else None
+                            rval = dr["_effective_rate_numeric"]
                             if cname and pd.notna(rval):
                                 try:
-                                    duty_by_country_map[cname] = float(rval)
+                                    fval = float(rval)
+                                    if cname not in duty_by_country_map or fval < duty_by_country_map[cname]:
+                                        duty_by_country_map[cname] = fval
                                 except (TypeError, ValueError):
                                     pass
-                    # Sort risk_snapshot by corruption score only — duty map unreliable when all equal
-                    # First try to use duty rates, fall back to pure corruption score sort
-                    country_min_duty = {}
-                    for _, dr in chart_df_summary.iterrows():
-                        # Try all possible country column names
-                        cname = None
-                        for col_try in ["Country", "country", "COUNTRY"]:
-                            if col_try in dr.index and pd.notna(dr[col_try]):
-                                cname = str(dr[col_try]).strip()
-                                break
-                        rval = dr.get("_effective_rate_numeric") if "_effective_rate_numeric" in chart_df_summary.columns else None
-                        if cname and rval is not None and pd.notna(rval):
-                            try:
-                                fval = float(rval)
-                                if cname not in country_min_duty or fval < country_min_duty[cname]:
-                                    country_min_duty[cname] = fval
-                            except (TypeError, ValueError):
-                                pass
-                    duty_by_country_map = country_min_duty
-                    # When duties are equal or missing, sort purely by corruption score
-                    duty_vals = list(duty_by_country_map.values())
-                    all_duties_equal = len(set(round(v, 2) for v in duty_vals)) <= 1 if duty_vals else True
-                    if all_duties_equal:
-                        best_snap_sorted = sorted(risk_snapshot, key=lambda s: s['score'])
-                    else:
-                        best_snap_sorted = sorted(
-                            risk_snapshot,
-                            key=lambda s: (round(duty_by_country_map.get(s['country'], 9999), 4), round(s['score'], 4))
-                        )
+                    # Always sort: duty first, then corruption score as tiebreaker
+                    import sys
+                    print("DEBUG duty_by_country_map:", duty_by_country_map, file=sys.stderr)
+                    best_snap_sorted = sorted(
+                        risk_snapshot,
+                        key=lambda s: (round(duty_by_country_map.get(s['country'], 9999), 2), round(s['score'], 2))
+                    )
+                    print("DEBUG sorted order:", [(s['country'], duty_by_country_map.get(s['country'], 9999), s['score']) for s in best_snap_sorted], file=sys.stderr)
                     best_risk_snap = best_snap_sorted[0] if best_snap_sorted else (risk_snapshot[0] if risk_snapshot else None)
                     true_best_country = best_risk_snap['country'] if best_risk_snap else best_country
                     true_best_rate = f"{duty_by_country_map[true_best_country]:.1f}%" if true_best_country in duty_by_country_map else best_rate
@@ -1003,8 +984,86 @@ div
                     graph_tab_idx = 1 if risk_snapshot else 0
                     if fig_payload:
                         with tabs[graph_tab_idx]:
-                            fig = go.Figure(fig_payload)
-                            st.plotly_chart(fig, width="stretch")
+                            chart_df_for_matrix = pd.DataFrame(msg.get("chart_data", []), columns=msg.get("chart_columns", []))
+                            risk_snap_for_matrix = msg.get("risk_snapshot") or []
+                            if not chart_df_for_matrix.empty and "Country" in chart_df_for_matrix.columns and risk_snap_for_matrix:
+                                rate_col_m = "Effective Rate (%)" if "Effective Rate (%)" in chart_df_for_matrix.columns else None
+                                duty_map_m = {}
+                                if rate_col_m:
+                                    for _, mr in chart_df_for_matrix.iterrows():
+                                        cn = mr.get("Country")
+                                        rv = mr.get(rate_col_m)
+                                        if cn and rv is not None:
+                                            try:
+                                                fv = float(str(rv).replace("%","").strip())
+                                                if cn not in duty_map_m or fv < duty_map_m[cn]:
+                                                    duty_map_m[cn] = fv
+                                            except (ValueError, TypeError):
+                                                pass
+                                import plotly.graph_objects as go_m
+                                matrix_fig = go_m.Figure()
+                                colors_m = ["#1a5ccc","#0f6e56","#e74c3c","#8b5cf6","#f59e0b"]
+                                max_duty_m = max(duty_map_m.values()) if duty_map_m else 20
+                                max_risk_m = max(s["score"] for s in risk_snap_for_matrix)
+                                mid_duty = max_duty_m / 2
+                                mid_risk = max_risk_m / 2
+                                def _quadrant_color(risk_score, duty_val, mid_r, mid_d):
+                                    low_risk = risk_score <= mid_r
+                                    low_duty = duty_val <= mid_d
+                                    if low_risk and low_duty: return "#1a5ccc"
+                                    if not low_risk and low_duty: return "#f59e0b"
+                                    if low_risk and not low_duty: return "#0f6e56"
+                                    return "#e74c3c"
+                                for i, snap in enumerate(risk_snap_for_matrix):
+                                    c = snap["country"]
+                                    duty_v = duty_map_m.get(c)
+                                    if duty_v is None:
+                                        continue
+                                    bubble_color = _quadrant_color(snap["score"], duty_v, mid_risk, mid_duty)
+                                    matrix_fig.add_trace(go_m.Scatter(
+                                        x=[snap["score"]], y=[duty_v],
+                                        mode="markers+text",
+                                        name=c,
+                                        text=[c],
+                                        textposition="top center",
+                                        textfont=dict(size=12, color=bubble_color),
+                                        marker=dict(size=40, color=bubble_color, line=dict(width=2, color="white")),
+                                        hovertemplate=f"<b>{c}</b><br>Risk score: {snap['score']:.1f}/100<br>Duty: {duty_v:.1f}%<extra></extra>"
+                                    ))
+                                    matrix_fig.add_annotation(x=snap["score"], y=duty_v,
+                                        text=f"{duty_v:.1f}%", showarrow=False,
+                                        font=dict(size=10, color="white", family="monospace"), yshift=0)
+                                pad_x = max_risk_m * 0.15
+                                pad_y = max_duty_m * 0.25
+                                matrix_fig.update_layout(
+                                    template="plotly_white",
+                                    margin=dict(l=20, r=20, t=10, b=60),
+                                    height=280,
+                                    plot_bgcolor="white",
+                                    showlegend=False,
+                                    shapes=[
+                                        dict(type="line", x0=mid_risk, x1=mid_risk, y0=0, y1=max_duty_m+pad_y,
+                                             line=dict(color="rgba(0,0,0,0.15)", width=1, dash="dash")),
+                                        dict(type="line", x0=0, x1=max_risk_m+pad_x, y0=mid_duty, y1=mid_duty,
+                                             line=dict(color="rgba(0,0,0,0.15)", width=1, dash="dash")),
+                                    ],
+                                    xaxis=dict(title="Corruption score (lower = safer)", gridcolor="#F0F2F5", zeroline=False,
+                                               range=[-2, max_risk_m+pad_x], tickfont=dict(size=12)),
+                                    yaxis=dict(title="Effective duty rate (%)", gridcolor="#F0F2F5", zeroline=False,
+                                               ticksuffix="%", range=[-0.5, max_duty_m+pad_y], tickfont=dict(size=12)),
+                                )
+                                st.plotly_chart(matrix_fig, use_container_width=True)
+                                st.markdown("""
+                                <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:4px;font-size:11px;">
+                                  <div style="padding:6px 10px;background:#e8f4ff;border-radius:6px;color:#1a4a8a;border:0.5px solid #b5d4f4;display:flex;align-items:center;gap:6px;"><span style="width:10px;height:10px;border-radius:50%;background:#1a5ccc;flex-shrink:0"></span>Bottom-left — low risk, low duty &rarr; ideal sourcing</div>
+                                  <div style="padding:6px 10px;background:#fff8e8;border-radius:6px;color:#7a5a0a;border:0.5px solid #f0d090;display:flex;align-items:center;gap:6px;"><span style="width:10px;height:10px;border-radius:50%;background:#f59e0b;flex-shrink:0"></span>Bottom-right — low duty, higher risk &rarr; cost efficient but exposed</div>
+                                  <div style="padding:6px 10px;background:#f0f8f0;border-radius:6px;color:#1a5a2a;border:0.5px solid #90d0a0;display:flex;align-items:center;gap:6px;"><span style="width:10px;height:10px;border-radius:50%;background:#0f6e56;flex-shrink:0"></span>Top-left — safe market, premium duty &rarr; regulatory safe haven</div>
+                                  <div style="padding:6px 10px;background:#fff0f0;border-radius:6px;color:#8a1a1a;border:0.5px solid #f0b0b0;display:flex;align-items:center;gap:6px;"><span style="width:10px;height:10px;border-radius:50%;background:#e74c3c;flex-shrink:0"></span>Top-right — high risk, high duty &rarr; avoid</div>
+                                </div>
+                                """, unsafe_allow_html=True)
+                            else:
+                                fig = go.Figure(fig_payload)
+                                st.plotly_chart(fig, width="stretch")
                     data_tab_idx = graph_tab_idx + (1 if fig_payload else 0)
                     chart_data = msg.get("chart_data")
                     if chart_data:
