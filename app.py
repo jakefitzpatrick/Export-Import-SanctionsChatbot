@@ -493,7 +493,7 @@ div
 
 
         st.markdown("<div style='background:rgba(240,165,0,0.12);border-left:3px solid #f0a500;border-radius:6px;padding:8px 12px;font-size:11px;color:#fde68a;margin:8px 0;'><b>Disclaimer:</b> This tool is for informational purposes only and does not constitute legal advice.</div>", unsafe_allow_html=True)
-        st.markdown("<p style='font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:0.12em;color:rgba(255,255,255,0.45);margin-bottom:8px;'>Recent Sessions</p>", unsafe_allow_html=True)
+        st.markdown("<p style='font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:0.12em;color:rgba(255,255,255,0.75);margin-bottom:8px;padding-left:10px;border-left:3px solid rgba(99,179,237,0.7);'>Recent Sessions</p>", unsafe_allow_html=True)
         if 'session_history' not in st.session_state:
             st.session_state['session_history'] = []
         if st.session_state['session_history']:
@@ -503,9 +503,67 @@ div
             st.markdown("<div style='font-size:11px;color:rgba(255,255,255,0.25);padding:4px 8px;'>No sessions yet</div>", unsafe_allow_html=True)
 
         st.markdown("<hr>", unsafe_allow_html=True)
-        st.markdown("<p style='font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:0.12em;color:rgba(255,255,255,0.45);margin-bottom:6px;margin-top:4px;'>Countries</p>", unsafe_allow_html=True)
+
+        _bc_inflight = st.session_state.get("best_countries_inflight", False)
+        _bc_codes = [code_map[label] for label in st.session_state.get("selected_products_display", []) if label in code_map]
+        _bc_disabled = _bc_inflight or not _bc_codes or bool(st.session_state.get("analysis_inflight"))
+
+        if _bc_inflight:
+            _btn_label = "Finding best countries…"
+            _btn_bg = "rgba(255,255,255,0.06)"
+            _btn_color = "rgba(255,255,255,0.4)"
+            _btn_border = "rgba(255,255,255,0.15)"
+        elif _bc_disabled:
+            _btn_label = "Auto-select best countries"
+            _btn_bg = "rgba(255,255,255,0.05)"
+            _btn_color = "rgba(255,255,255,0.3)"
+            _btn_border = "rgba(255,255,255,0.1)"
+        else:
+            _btn_label = "Auto-select best countries"
+            _btn_bg = "rgba(99,179,237,0.15)"
+            _btn_color = "rgba(255,255,255,0.9)"
+            _btn_border = "rgba(99,179,237,0.4)"
+
+        st.markdown(f"""<style>
+        [data-testid="stSidebar"] [data-testid="stButton"] button {{
+            background: {_btn_bg} !important;
+            color: {_btn_color} !important;
+            border: 1px solid {_btn_border} !important;
+            border-radius: 8px !important;
+            font-size: 12px !important;
+            font-weight: 600 !important;
+            letter-spacing: 0.03em !important;
+            padding: 10px 12px !important;
+            width: 100% !important;
+            text-align: center !important;
+            box-shadow: none !important;
+            cursor: {"not-allowed" if _bc_disabled else "pointer"} !important;
+        }}
+        </style>""", unsafe_allow_html=True)
+
+        st.markdown("<p style='font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:0.12em;color:rgba(255,255,255,0.75);margin:0 0 6px 0;padding-left:10px;border-left:3px solid rgba(99,179,237,0.7);'>Countries</p>", unsafe_allow_html=True)
         st.multiselect("Countries", options=country_options, key="selected_countries", max_selections=MAX_COUNTRY_SELECTION, label_visibility="hidden")
-        st.markdown("<p style='font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:0.12em;color:rgba(255,255,255,0.45);margin-top:14px;margin-bottom:6px;'>HTS Products</p>", unsafe_allow_html=True)
+
+        _or_style = "display:flex;align-items:center;gap:8px;margin:8px 0;"
+        _line_style = "flex:1;height:1px;background:rgba(255,255,255,0.1);"
+        _or_text_style = "font-size:10px;color:rgba(255,255,255,0.3);letter-spacing:0.08em;text-transform:uppercase;white-space:nowrap;"
+        st.markdown(f"<div style='{_or_style}'><div style='{_line_style}'></div><span style='{_or_text_style}'>or</span><div style='{_line_style}'></div></div>", unsafe_allow_html=True)
+
+        if st.button(
+            _btn_label,
+            key="btn_find_best_countries",
+            disabled=_bc_disabled,
+            help="Auto-select the 3 best countries for this HTS code based on tariff rates, corruption risk, and trade-flow reasoning.",
+        ):
+            st.session_state["best_countries_request"] = {"hts_code": _bc_codes[0]}
+            st.rerun()
+        if not _bc_codes and not _bc_inflight:
+            st.markdown("<div style='font-size:10px;color:rgba(255,255,255,0.4);margin-top:4px;margin-bottom:0;padding:0;'>Select an HTS code below to enable</div>", unsafe_allow_html=True)
+        if st.session_state.get("best_countries_error"):
+            st.markdown(f"<div style='font-size:10px;color:#f87171;padding:4px 0;'>{st.session_state.pop('best_countries_error')}</div>", unsafe_allow_html=True)
+
+        st.markdown("<div style='height:6px;'></div>", unsafe_allow_html=True)
+        st.markdown("<p style='font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:0.12em;color:rgba(255,255,255,0.75);margin:0 0 6px 0;padding-left:10px;border-left:3px solid rgba(99,179,237,0.7);'>HTS Products</p>", unsafe_allow_html=True)
         if display_options:
             all_codes = [opt.split(" — ")[0].strip() for opt in display_options]
 
@@ -673,21 +731,6 @@ div
                 for i, prod in enumerate(selected_prods):
                     st.markdown(f"<div style='font-size:11px;color:rgba(255,255,255,0.7);padding:3px 0;'>✓ {prod}</div>", unsafe_allow_html=True)
 
-        _bc_inflight = st.session_state.get("best_countries_inflight", False)
-        _bc_codes = [code_map[label] for label in st.session_state.get("selected_products_display", []) if label in code_map]
-        _bc_disabled = _bc_inflight or not _bc_codes or bool(st.session_state.get("analysis_inflight"))
-        if st.button(
-            "Finding best countries…" if _bc_inflight else "❆ Find Best Countries",
-            key="btn_find_best_countries",
-            disabled=_bc_disabled,
-            help="Auto-select the 3 best countries for this HTS code based on tariff rates, corruption risk, and trade-flow reasoning.",
-        ):
-            st.session_state["best_countries_request"] = {"hts_code": _bc_codes[0]}
-            st.rerun()
-        if not _bc_codes and not _bc_inflight:
-            st.markdown("<div style='font-size:10px;color:rgba(255,255,255,0.3);padding:2px 0;'>Select an HTS code above to enable</div>", unsafe_allow_html=True)
-        if st.session_state.get("best_countries_error"):
-            st.markdown(f"<div style='font-size:10px;color:#f87171;padding:4px 0;'>{st.session_state.pop('best_countries_error')}</div>", unsafe_allow_html=True)
 
         st.markdown("<hr>", unsafe_allow_html=True)
         with st.expander("About", expanded=False):
