@@ -14,6 +14,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from analysis import maybe_run_analysis, queue_analysis_request
+from ranker import maybe_run_best_countries
 from chat import answer_question, append_message
 from risk_model import get_risk_df
 from session import enforce_selection_limit, reset_app_state
@@ -440,6 +441,11 @@ div
     st.session_state.setdefault("correlation_signature", None)
     st.session_state.setdefault("chat_scroll_token", 0)
 
+    # Apply pending country selection from best-countries ranker before the widget renders
+    _pending = st.session_state.pop("best_countries_pending", None)
+    if _pending:
+        st.session_state["selected_countries"] = _pending
+
     # do not auto-refill selections - let user control them
 
     selected_countries, country_trimmed = enforce_selection_limit(
@@ -666,6 +672,23 @@ div
             if selected_prods:
                 for i, prod in enumerate(selected_prods):
                     st.markdown(f"<div style='font-size:11px;color:rgba(255,255,255,0.7);padding:3px 0;'>✓ {prod}</div>", unsafe_allow_html=True)
+
+        _bc_inflight = st.session_state.get("best_countries_inflight", False)
+        _bc_codes = [code_map[label] for label in st.session_state.get("selected_products_display", []) if label in code_map]
+        _bc_disabled = _bc_inflight or not _bc_codes or bool(st.session_state.get("analysis_inflight"))
+        if st.button(
+            "Finding best countries…" if _bc_inflight else "❆ Find Best Countries",
+            key="btn_find_best_countries",
+            disabled=_bc_disabled,
+            help="Auto-select the 3 best countries for this HTS code based on tariff rates, corruption risk, and trade-flow reasoning.",
+        ):
+            st.session_state["best_countries_request"] = {"hts_code": _bc_codes[0]}
+            st.rerun()
+        if not _bc_codes and not _bc_inflight:
+            st.markdown("<div style='font-size:10px;color:rgba(255,255,255,0.3);padding:2px 0;'>Select an HTS code above to enable</div>", unsafe_allow_html=True)
+        if st.session_state.get("best_countries_error"):
+            st.markdown(f"<div style='font-size:10px;color:#f87171;padding:4px 0;'>{st.session_state.pop('best_countries_error')}</div>", unsafe_allow_html=True)
+
         st.markdown("<hr>", unsafe_allow_html=True)
         with st.expander("About", expanded=False):
             st.caption("ImportInsight AI translates your prompt into SQL and returns the actual HTS rows.")
@@ -1135,6 +1158,11 @@ div
             )
 
         analysis_stream_placeholder = st.empty()
+        maybe_run_best_countries(
+            conn,
+            deployment_id,
+            risk_df,
+        )
         maybe_run_analysis(
             conn,
             deployment_id,
