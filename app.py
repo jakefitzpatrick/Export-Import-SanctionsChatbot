@@ -14,6 +14,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from analysis import maybe_run_analysis, queue_analysis_request
+from ranker import maybe_run_best_countries
 from chat import answer_question, append_message
 from risk_model import get_risk_df
 from session import enforce_selection_limit, reset_app_state
@@ -434,6 +435,11 @@ div
 
     # do not auto-refill selections - let user control them
 
+    # Apply pending country selection from best-countries ranker before the widget renders
+    _pending = st.session_state.pop("best_countries_pending", None)
+    if _pending:
+        st.session_state["selected_countries"] = _pending
+
     selected_countries, country_trimmed = enforce_selection_limit(
         "selected_countries",
         MAX_COUNTRY_SELECTION,
@@ -491,6 +497,7 @@ div
         st.markdown("<hr>", unsafe_allow_html=True)
         st.markdown("<p style='font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:0.12em;color:rgba(255,255,255,0.45);margin-bottom:6px;margin-top:4px;'>Countries</p>", unsafe_allow_html=True)
         st.multiselect("Countries", options=country_options, key="selected_countries", max_selections=MAX_COUNTRY_SELECTION, label_visibility="hidden")
+
         st.markdown("<p style='font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:0.12em;color:rgba(255,255,255,0.45);margin-top:14px;margin-bottom:6px;'>HTS Products</p>", unsafe_allow_html=True)
         if display_options:
             all_codes = [opt.split(" — ")[0].strip() for opt in display_options]
@@ -658,6 +665,23 @@ div
             if selected_prods:
                 for i, prod in enumerate(selected_prods):
                     st.markdown(f"<div style='font-size:11px;color:rgba(255,255,255,0.7);padding:3px 0;'>✓ {prod}</div>", unsafe_allow_html=True)
+
+        _bc_inflight = st.session_state.get("best_countries_inflight", False)
+        _bc_codes = [code_map[label] for label in st.session_state.get("selected_products_display", []) if label in code_map]
+        _bc_disabled = _bc_inflight or not _bc_codes or bool(st.session_state.get("analysis_inflight"))
+        if st.button(
+            "Finding best countries…" if _bc_inflight else "✦ Find Best Countries",
+            key="btn_find_best_countries",
+            disabled=_bc_disabled,
+            help="Auto-select the 3 best countries for this HTS code based on tariff rates, corruption risk, and trade-flow reasoning.",
+        ):
+            st.session_state["best_countries_request"] = {"hts_code": _bc_codes[0]}
+            st.rerun()
+        if not _bc_codes and not _bc_inflight:
+            st.markdown("<div style='font-size:10px;color:rgba(255,255,255,0.3);padding:2px 0;'>Select an HTS code above to enable</div>", unsafe_allow_html=True)
+        if st.session_state.get("best_countries_error"):
+            st.markdown(f"<div style='font-size:10px;color:#f87171;padding:4px 0;'>{st.session_state.pop('best_countries_error')}</div>", unsafe_allow_html=True)
+
         st.markdown("<hr>", unsafe_allow_html=True)
         with st.expander("About", expanded=False):
             st.caption("ImportInsight AI translates your prompt into SQL and returns the actual HTS rows.")
@@ -729,6 +753,24 @@ div
                 st.warning("Select at least one country and one product before running analysis.")
         if st.session_state.get("analysis_inflight"):
             st.caption("Running analysis…")
+        if st.session_state.get("best_countries_inflight"):
+            st.caption("Finding best countries…")
+        bc_result = st.session_state.get("best_countries_rationale")
+        if bc_result and bc_result.get("selected"):
+            _bc_hts = bc_result.get("hts_code", "")
+            _bc_selected = bc_result.get("selected", [])
+            _bc_rationale = bc_result.get("rationale", {})
+            _bc_parts = []
+            for c in _bc_selected:
+                reason = _bc_rationale.get(c, "")
+                _bc_parts.append(f"<b>{c}</b>{': ' + reason if reason else ''}")
+            st.markdown(
+                f"<div style='font-size:11px;background:rgba(15,31,56,0.05);border-left:3px solid #4F8FB8;"
+                f"border-radius:6px;padding:8px 12px;margin-top:4px;'>"
+                f"<span style='color:#4F8FB8;font-weight:600;'>Auto-selected for {_bc_hts}:</span> "
+                + " · ".join(_bc_parts) + "</div>",
+                unsafe_allow_html=True,
+            )
     analysis_stream_placeholder: st.delta_generator.DeltaGenerator | None = None
     chat_feed = st.container(height=480, border=False)
     composer = st.container()
@@ -1033,7 +1075,7 @@ div
                 st.info("The last query returned no rows.")
         st.markdown('<div data-anchor="chat-end" id="chat-end"></div>', unsafe_allow_html=True)
 
-    # analysis runs inside chat_feed above
+    maybe_run_best_countries(conn, deployment_id, risk_df)
 
     components.html("""<script>
     (function() {
