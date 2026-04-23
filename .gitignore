@@ -9,3 +9,4 @@ __pycache__/
 !data/vdem_latest.csv
 *.ZIP
 .env
+*:Zone.Identifier
