@@ -467,6 +467,8 @@ div
         section[data-testid="stSidebar"] > div > div { padding-top: 0 !important; }
         section[data-testid="stSidebar"] > div > div > div { padding-top: 0 !important; }
         [data-testid="stSidebar"] hr { border-color: rgba(255,255,255,0.12) !important; }
+
+
         [data-testid="stSidebar"] [data-baseweb="tag"] {
             background-color: rgba(255,255,255,0.1) !important;
             border: 0.5px solid rgba(255,255,255,0.2) !important;
@@ -492,17 +494,14 @@ div
         st.image("logo_clean.png", width=120)
 
 
-        st.markdown("<div style='background:rgba(240,165,0,0.12);border-left:3px solid #f0a500;border-radius:6px;padding:8px 12px;font-size:11px;color:#fde68a;margin:8px 0;'><b>Disclaimer:</b> This tool is for informational purposes only and does not constitute legal advice.</div>", unsafe_allow_html=True)
         st.markdown("<p style='font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:0.12em;color:rgba(255,255,255,0.75);margin-bottom:8px;padding-left:10px;border-left:3px solid rgba(99,179,237,0.7);'>Recent Sessions</p>", unsafe_allow_html=True)
         if 'session_history' not in st.session_state:
             st.session_state['session_history'] = []
         if st.session_state['session_history']:
             for entry in reversed(st.session_state['session_history'][-4:]):
-                st.markdown(f"<div style='padding:6px 8px;border-radius:6px;font-size:12px;color:rgba(255,255,255,0.55);margin-bottom:3px;background:rgba(255,255,255,0.05);'><span style='color:#4F8FB8;margin-right:6px;'>●</span>{entry}</div>", unsafe_allow_html=True)
+                st.markdown(f"<div style='padding:5px 6px;border-radius:6px;font-size:12px;color:rgba(255,255,255,0.55);margin-bottom:3px;background:rgba(255,255,255,0.05);'><span style='color:#4F8FB8;margin-right:6px;'>●</span>{entry}</div>", unsafe_allow_html=True)
         else:
-            st.markdown("<div style='font-size:11px;color:rgba(255,255,255,0.25);padding:4px 8px;'>No sessions yet</div>", unsafe_allow_html=True)
-
-        st.markdown("<hr>", unsafe_allow_html=True)
+            st.markdown("<div style='font-size:11px;color:rgba(255,255,255,0.25);padding:2px 4px;'>No sessions yet</div>", unsafe_allow_html=True)
 
         _bc_inflight = st.session_state.get("best_countries_inflight", False)
         _bc_codes = [code_map[label] for label in st.session_state.get("selected_products_display", []) if label in code_map]
@@ -541,6 +540,7 @@ div
         }}
         </style>""", unsafe_allow_html=True)
 
+        st.markdown("<div style='height:14px;'></div>", unsafe_allow_html=True)
         st.markdown("<p style='font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:0.12em;color:rgba(255,255,255,0.75);margin:0 0 6px 0;padding-left:10px;border-left:3px solid rgba(99,179,237,0.7);'>Countries</p>", unsafe_allow_html=True)
         st.multiselect("Countries", options=country_options, key="selected_countries", max_selections=MAX_COUNTRY_SELECTION, label_visibility="hidden")
 
@@ -562,7 +562,7 @@ div
         if st.session_state.get("best_countries_error"):
             st.markdown(f"<div style='font-size:10px;color:#f87171;padding:4px 0;'>{st.session_state.pop('best_countries_error')}</div>", unsafe_allow_html=True)
 
-        st.markdown("<div style='height:6px;'></div>", unsafe_allow_html=True)
+        st.markdown("<div style='height:14px;'></div>", unsafe_allow_html=True)
         st.markdown("<p style='font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:0.12em;color:rgba(255,255,255,0.75);margin:0 0 6px 0;padding-left:10px;border-left:3px solid rgba(99,179,237,0.7);'>HTS Products</p>", unsafe_allow_html=True)
         if display_options:
             all_codes = [opt.split(" — ")[0].strip() for opt in display_options]
@@ -821,6 +821,7 @@ div
     chip_question = st.session_state.pop("chip_question", None)
 
     prompt = st.chat_input(QUESTION_PLACEHOLDER, key="chat_input")
+    st.markdown("<div style='text-align:center;font-size:11px;color:#9CA3AF;margin-top:2px;padding:0 24px;'><b style='color:#6B7280;'>Disclaimer:</b> This tool is for informational purposes only and does not constitute legal advice.</div>", unsafe_allow_html=True)
 
     if prompt is None and chip_question:
         prompt = chip_question.strip()
