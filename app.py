@@ -13,7 +13,7 @@ import plotly.graph_objects as go
 import streamlit as st
 import streamlit.components.v1 as components
 
-from analysis import maybe_run_analysis, queue_analysis_request
+from analysis import maybe_run_analysis, queue_analysis_request, render_correlation_chart
 from ranker import maybe_run_best_countries
 from chat import answer_question, append_message
 from risk_model import get_risk_df
@@ -964,13 +964,10 @@ div
                                 except (TypeError, ValueError):
                                     pass
                     # Always sort: duty first, then corruption score as tiebreaker
-                    import sys
-                    print("DEBUG duty_by_country_map:", duty_by_country_map, file=sys.stderr)
                     best_snap_sorted = sorted(
                         risk_snapshot,
                         key=lambda s: (round(duty_by_country_map.get(s['country'], 9999), 2), round(s['score'], 2))
                     )
-                    print("DEBUG sorted order:", [(s['country'], duty_by_country_map.get(s['country'], 9999), s['score']) for s in best_snap_sorted], file=sys.stderr)
                     best_risk_snap = best_snap_sorted[0] if best_snap_sorted else (risk_snapshot[0] if risk_snapshot else None)
                     true_best_country = best_risk_snap['country'] if best_risk_snap else best_country
                     true_best_rate = f"{duty_by_country_map[true_best_country]:.1f}%" if true_best_country in duty_by_country_map else best_rate
@@ -1003,11 +1000,14 @@ div
                     </div>
                     """, unsafe_allow_html=True)
 
-                has_tabs = fig_payload or risk_snapshot or chart_data
+                specific_chart_data_tabs = msg.get("specific_chart_data") or []
+                has_specific_tab = bool(specific_chart_data_tabs)
+                has_tabs = fig_payload or risk_snapshot or chart_data or has_specific_tab
                 if has_tabs:
                     tab_labels = []
                     if risk_snapshot: tab_labels.append("◎ Corruption Score")
                     tab_labels.append("∿ Graph")
+                    if has_specific_tab: tab_labels.append("⊞ Specific Duty")
                     if chart_data: tab_labels.append("≡ Data")
                     tab_labels.append("◈ Analysis")
                     tabs = st.tabs(tab_labels)
@@ -1049,6 +1049,17 @@ div
                         st.markdown(gauges_div, unsafe_allow_html=True)
                 if has_tabs:
                     graph_tab_idx = 1 if risk_snapshot else 0
+                    specific_tab_idx = graph_tab_idx + 1
+                    if has_specific_tab:
+                        with tabs[specific_tab_idx]:
+                            spec_df = pd.DataFrame(specific_chart_data_tabs)
+                            spec_fig = render_correlation_chart(spec_df, mode="specific")
+                            if spec_fig:
+                                st.plotly_chart(spec_fig, use_container_width=True, config={"displayModeBar": False})
+                                st.caption("Specific (per-unit) duties cannot be directly compared to ad-valorem rates. Values shown in native units ($/kg, ¢/unit, etc.).")
+                            else:
+                                st.info("No plottable specific-duty data for these selections.")
+                    data_tab_idx = specific_tab_idx + (1 if has_specific_tab else 0)
                     with tabs[graph_tab_idx]:
                         chart_df_for_matrix = pd.DataFrame(msg.get("chart_data", []), columns=msg.get("chart_columns", []))
                         risk_snap_for_matrix = msg.get("risk_snapshot") or []
@@ -1118,8 +1129,11 @@ div
                                 yaxis=dict(title="Effective duty rate (%)", gridcolor="#F0F2F5", zeroline=False,
                                            ticksuffix="%", range=[-0.5, max_duty_m+pad_y], tickfont=dict(size=12)),
                             )
-                            st.plotly_chart(matrix_fig, use_container_width=True)
-                            st.markdown("""
+                            if not duty_map_m:
+                                st.info("No percentage-based duty rates available to plot for this product.")
+                            else:
+                                st.plotly_chart(matrix_fig, use_container_width=True)
+                                st.markdown("""
                             <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:4px;font-size:11px;">
                               <div style="padding:6px 10px;background:#e8f4ff;border-radius:6px;color:#1a4a8a;border:0.5px solid #b5d4f4;display:flex;align-items:center;gap:6px;"><span style="width:10px;height:10px;border-radius:50%;background:#1a5ccc;flex-shrink:0"></span>Bottom-left — low risk, low duty &rarr; ideal sourcing</div>
                               <div style="padding:6px 10px;background:#fff8e8;border-radius:6px;color:#7a5a0a;border:0.5px solid #f0d090;display:flex;align-items:center;gap:6px;"><span style="width:10px;height:10px;border-radius:50%;background:#f59e0b;flex-shrink:0"></span>Bottom-right — low duty, higher risk &rarr; cost efficient but exposed</div>
@@ -1133,7 +1147,6 @@ div
                                 st.plotly_chart(fig, use_container_width=True)
                             else:
                                 st.info("No percentage-based duty rates available to plot for this product.")
-                    data_tab_idx = graph_tab_idx + 1
                     chart_data = msg.get("chart_data")
                     if chart_data:
                         with tabs[data_tab_idx]:
@@ -1147,15 +1160,19 @@ div
                         )
                         duty_exclusions = msg.get("duty_exclusions") or []
                         exclusion_text = msg.get("duty_exclusion_message")
-                        if exclusion_text:
+                        non_specific_excl = [
+                            item for item in duty_exclusions
+                            if item.get("duty_kind") not in ("specific", "mixed")
+                        ]
+                        if exclusion_text and non_specific_excl:
                             st.warning(exclusion_text)
-                        elif duty_exclusions:
+                        elif non_specific_excl:
                             listed = ", ".join(
                                 f"{item.get('hts_code')} ({item.get('general_duty_rate_text')})"
-                                for item in duty_exclusions[:3]
+                                for item in non_specific_excl[:3]
                             )
-                            if len(duty_exclusions) > 3:
-                                listed += f", +{len(duty_exclusions) - 3} more"
+                            if len(non_specific_excl) > 3:
+                                listed += f", +{len(non_specific_excl) - 3} more"
                             st.warning(f"Skipped non-percentage duty rates: {listed}")
                         # Follow-up prompt chips
                         selections = msg.get("selections", {})
@@ -1186,15 +1203,19 @@ div
                     )
                     duty_exclusions = msg.get("duty_exclusions") or []
                     exclusion_text = msg.get("duty_exclusion_message")
-                    if exclusion_text:
+                    non_specific_excl2 = [
+                        item for item in duty_exclusions
+                        if item.get("duty_kind") not in ("specific", "mixed")
+                    ]
+                    if exclusion_text and non_specific_excl2:
                         st.warning(exclusion_text)
-                    elif duty_exclusions:
+                    elif non_specific_excl2:
                         listed = ", ".join(
                             f"{item.get('hts_code')} ({item.get('general_duty_rate_text')})"
-                            for item in duty_exclusions[:3]
+                            for item in non_specific_excl2[:3]
                         )
-                        if len(duty_exclusions) > 3:
-                            listed += f", +{len(duty_exclusions) - 3} more"
+                        if len(non_specific_excl2) > 3:
+                            listed += f", +{len(non_specific_excl2) - 3} more"
                         st.warning(f"Skipped non-percentage duty rates: {listed}")
                 continue
 
