@@ -880,6 +880,26 @@ def build_correlation_dataframe(
                     if ch99_tradeprogram:
                         ch99_programs.add(ch99_tradeprogram)
 
+            # For specific-duty products with a Ch99 ad-valorem rule, flag that the
+            # surcharge applies but cannot be computed without a declared value.
+            if rule is not None and not base_has_ad_valorem:
+                program = rule.get("ch99_tradeprogram") or "Ch.99"
+                additive_pct = rule.get("ch99_additional_pct") or 0.0
+                floor_rate = rule.get("ch99_newrate")
+                floor_modifier = (rule.get("ch99_rate_modifier") or "").strip()
+                has_ad_component = (
+                    (additive_pct and float(additive_pct) > 0)
+                    or (floor_modifier == "Floor" and floor_rate is not None)
+                )
+                if has_ad_component:
+                    note = f"{program} surcharge applies — cannot quantify without declared value"
+                    rule = dict(rule)
+                    existing = rule.get("ch99_specific_surcharge") or ""
+                    rule["ch99_specific_surcharge"] = f"{existing} | {note}" if existing else note
+                    ch99_tradeprogram = program
+                    if not rate_source or rate_source == "General":
+                        rate_source = f"Ch.99 ({program})"
+
             if rule is not None:
                 ch99_specific_text = rule.get("ch99_specific_surcharge") or ""
                 specific_components = rule.get("ch99_specific_components") or []
