@@ -880,40 +880,6 @@ def build_correlation_dataframe(
                     if ch99_tradeprogram:
                         ch99_programs.add(ch99_tradeprogram)
 
-            # For specific-duty products, apply any additive % surcharge or Floor note
-            # from Ch99 as an annotation — we cannot convert to a per-unit equivalent,
-            # but we can surface the obligation so it is visible in the table.
-            if rule is not None and not base_has_ad_valorem:
-                additive_pct = rule.get("ch99_additional_pct") or 0.0
-                floor_rate = rule.get("ch99_newrate")
-                floor_modifier = (rule.get("ch99_rate_modifier") or "").strip()
-                program = rule.get("ch99_tradeprogram") or ""
-                ad_notes: list[str] = []
-                try:
-                    ap = float(additive_pct)
-                    if ap > 0:
-                        ad_notes.append(f"+{ap * 100:.0f}% ad val.")
-                except (TypeError, ValueError):
-                    pass
-                if floor_modifier == "Floor" and floor_rate is not None:
-                    try:
-                        ad_notes.append(f"{float(floor_rate):.0f}% floor")
-                    except (TypeError, ValueError):
-                        pass
-                if ad_notes:
-                    note = " · ".join(ad_notes)
-                    if program:
-                        note = f"{note} ({program})"
-                    # Append to ch99_specific_surcharge so it surfaces in the table
-                    existing = rule.get("ch99_specific_surcharge") or ""
-                    rule = dict(rule)  # don't mutate the cached rule
-                    rule["ch99_specific_surcharge"] = (
-                        f"{existing} | {note}" if existing else note
-                    )
-                    ch99_tradeprogram = program or ch99_tradeprogram
-                    if not rate_source or rate_source == "General":
-                        rate_source = f"Ch.99 ({program})" if program else "Ch.99 annotated"
-
             if rule is not None:
                 ch99_specific_text = rule.get("ch99_specific_surcharge") or ""
                 specific_components = rule.get("ch99_specific_components") or []
