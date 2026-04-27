@@ -36,6 +36,11 @@ def bootstrap_session_state(
     st.session_state.setdefault("correlation_signature", None)
     st.session_state.setdefault("chat_scroll_token", 0)
     st.session_state.setdefault(LLM_CACHE_KEY, {})
+    st.session_state.setdefault("best_countries_request", None)
+    st.session_state.setdefault("best_countries_inflight", False)
+    st.session_state.setdefault("best_countries_rationale", None)
+    st.session_state.setdefault("best_countries_error", None)
+    st.session_state.setdefault("best_countries_pending", None)
 
     if not st.session_state["selected_countries"]:
         st.session_state["selected_countries"] = (
@@ -70,6 +75,10 @@ def reset_app_state(extra_widget_keys: Sequence[str] | None = None) -> None:
     st.session_state["analysis_request"] = None
     st.session_state["last_analysis_context"] = None
     st.session_state["chat_scroll_token"] = 0
+    st.session_state["best_countries_request"] = None
+    st.session_state["best_countries_inflight"] = False
+    st.session_state["best_countries_rationale"] = None
+    st.session_state["best_countries_error"] = None
     # llm_cache intentionally NOT cleared — cached results survive Clear Chat
 
 

@@ -880,6 +880,26 @@ def build_correlation_dataframe(
                     if ch99_tradeprogram:
                         ch99_programs.add(ch99_tradeprogram)
 
+            # For specific-duty products with a Ch99 ad-valorem rule, flag that the
+            # surcharge applies but cannot be computed without a declared value.
+            if rule is not None and not base_has_ad_valorem:
+                program = rule.get("ch99_tradeprogram") or "Ch.99"
+                additive_pct = rule.get("ch99_additional_pct") or 0.0
+                floor_rate = rule.get("ch99_newrate")
+                floor_modifier = (rule.get("ch99_rate_modifier") or "").strip()
+                has_ad_component = (
+                    (additive_pct and float(additive_pct) > 0)
+                    or (floor_modifier == "Floor" and floor_rate is not None)
+                )
+                if has_ad_component:
+                    note = f"{program} surcharge applies — cannot quantify without declared value"
+                    rule = dict(rule)
+                    existing = rule.get("ch99_specific_surcharge") or ""
+                    rule["ch99_specific_surcharge"] = f"{existing} | {note}" if existing else note
+                    ch99_tradeprogram = program
+                    if not rate_source or rate_source == "General":
+                        rate_source = f"Ch.99 ({program})"
+
             if rule is not None:
                 ch99_specific_text = rule.get("ch99_specific_surcharge") or ""
                 specific_components = rule.get("ch99_specific_components") or []
@@ -1016,6 +1036,33 @@ def build_risk_snapshot(risk_df: pd.DataFrame, selected_countries: list[str]) ->
     return subset[["country", "score", "level", "color", "year"]].to_dict("records")
 
 
+def _jitter_positions(values: list[float], min_gap: float) -> list[float]:
+    """Spread values closer than min_gap so markers don't overlap.
+
+    Returns jittered positions in the same order as the input list.
+    """
+    n = len(values)
+    if n <= 1:
+        return list(values)
+    order = sorted(range(n), key=lambda i: values[i])
+    sorted_vals = [values[i] for i in order]
+    for i in range(1, n):
+        if sorted_vals[i] - sorted_vals[i - 1] < min_gap:
+            sorted_vals[i] = sorted_vals[i - 1] + min_gap
+    orig_mean = sum(values) / n
+    new_mean = sum(sorted_vals) / n
+    sorted_vals = [v + (orig_mean - new_mean) for v in sorted_vals]
+    result = [0.0] * n
+    for sorted_idx, orig_idx in enumerate(order):
+        result[orig_idx] = sorted_vals[sorted_idx]
+    return result
+
+
+def _text_positions_for(n: int) -> list[str]:
+    pool = ["top center", "bottom center", "top right", "bottom left"]
+    return [pool[i % len(pool)] for i in range(n)]
+
+
 def render_correlation_chart(df: pd.DataFrame, mode: str = "ad_valorem") -> go.Figure | None:
     """Return a Plotly scatter figure for the correlation pairs.
 
@@ -1031,32 +1078,57 @@ def render_correlation_chart(df: pd.DataFrame, mode: str = "ad_valorem") -> go.F
 
     if mode == "specific":
         plot_df = df[df["specific_amount"].notna()].copy() if "specific_amount" in df.columns else pd.DataFrame()
-        if plot_df.empty:
+        if plot_df.empty or "corruption_score" not in plot_df.columns:
             return None
 
         units = plot_df["specific_unit"].dropna().unique() if "specific_unit" in plot_df.columns else []
         unit_label = units[0].strip() if len(units) == 1 else "unit"
 
+        palette = ["#0B2A4A", "#4F6D7A", "#7AAFDE", "#B5D4F4", "#378ADD"]
         fig = go.Figure()
-        countries = plot_df["country"].unique()
-        colors = ["#0B2A4A", "#4F6D7A", "#7AAFDE", "#B5D4F4"]
-        for i, country in enumerate(countries):
-            row = plot_df[plot_df["country"] == country]
-            fig.add_trace(go.Bar(
-                name=country,
-                x=[country],
-                y=row["specific_amount"].values,
-                marker_color=colors[i % len(colors)],
-                text=[f"{v:.4f} {unit_label}" for v in row["specific_amount"].values],
-                textposition="outside",
+
+        x_raw = plot_df["corruption_score"].tolist()
+        x_jittered = _jitter_positions(x_raw, min_gap=6.0)
+        text_pos_list = _text_positions_for(len(plot_df))
+
+        for i, (_, row) in enumerate(plot_df.iterrows()):
+            color = palette[i % len(palette)]
+            level = row.get("risk_level", "")
+            amount = row["specific_amount"]
+            formatted = f"{amount:.4f}".rstrip("0").rstrip(".")
+            fig.add_trace(go.Scatter(
+                x=[x_jittered[i]],
+                y=[amount],
+                mode="markers+text",
+                name=row["country"],
+                text=[row["country"]],
+                textposition=text_pos_list[i],
+                textfont=dict(size=13, color="#374151"),
+                marker=dict(size=48, color=color, line=dict(width=2.5, color="white"), symbol="circle"),
+                hovertemplate=(
+                    f"<b>{row['country']}</b><br>"
+                    f"Corruption score: {row['corruption_score']:.1f} / 100<br>"
+                    f"Specific duty: {formatted} {unit_label}<br>"
+                    f"Risk level: {level}"
+                    "<extra></extra>"
+                ),
             ))
+            fig.add_annotation(
+                x=x_jittered[i], y=amount,
+                text=f"{formatted} {unit_label}",
+                showarrow=False,
+                font=dict(size=11, color="white", family="monospace"),
+                yshift=0,
+            )
+
         fig.update_layout(
+            xaxis_title="Corruption / Political Risk Score",
             yaxis_title=f"Specific Duty Rate ({unit_label})",
             template="plotly_white",
-            margin=dict(l=10, r=10, t=40, b=10),
+            margin=dict(l=10, r=10, t=40, b=40),
             showlegend=False,
-            bargap=0.35,
             plot_bgcolor="white",
+            xaxis=dict(range=[-5, 105], gridcolor="#F0F2F5"),
             yaxis=dict(gridcolor="#F0F2F5"),
         )
         return fig
@@ -1094,18 +1166,22 @@ def render_correlation_chart(df: pd.DataFrame, mode: str = "ad_valorem") -> go.F
 
     fig = go.Figure()
 
+    x_raw_av = summary["corruption_score"].tolist()
+    x_jittered_av = _jitter_positions(x_raw_av, min_gap=6.0)
+    text_pos_av = _text_positions_for(len(summary))
+
     for i, row in summary.iterrows():
         ch99 = bool(row.get("ch99_applied", False)) if has_ch99 else False
         color = palette[i % len(palette)]
         level = row.get("risk_level", "")
 
         fig.add_trace(go.Scatter(
-            x=[row["corruption_score"]],
+            x=[x_jittered_av[i]],
             y=[row["ad_valorem_rate"]],
             mode="markers+text",
             name=row["country"],
             text=[row["country"]],
-            textposition="top center",
+            textposition=text_pos_av[i],
             textfont=dict(size=13, color=color),
             marker=dict(
                 size=48,
@@ -1124,7 +1200,7 @@ def render_correlation_chart(df: pd.DataFrame, mode: str = "ad_valorem") -> go.F
         ))
 
         fig.add_annotation(
-            x=row["corruption_score"],
+            x=x_jittered_av[i],
             y=row["ad_valorem_rate"],
             text=f"{row['ad_valorem_rate']:.1f}%",
             showarrow=False,
@@ -1216,6 +1292,7 @@ def _derive_headline(
     df: pd.DataFrame,
     selected_countries: Iterable[str],
     selected_products: Iterable[str],
+    specific_only_countries: list[str] | None = None,
 ) -> str:
     country_text = ", ".join(selected_countries) if selected_countries else "your selections"
     product_text = ", ".join(selected_products) if selected_products else "the chosen HTS codes"
@@ -1232,7 +1309,10 @@ def _derive_headline(
             else "the posted duty"
         )
         risk_level = (row.get("risk_level") or "Unknown").lower()
-        return f"{row['country']} is your only {risk_level} option for HTS {row['hts_code']} with {duty_text}."
+        headline = f"{row['country']} is your only {risk_level} option for HTS {row['hts_code']} with {duty_text}."
+        if specific_only_countries:
+            headline += f" Note: {', '.join(specific_only_countries)} carry specific (per-unit) duties — see the ⊞ Specific Duty tab."
+        return headline
 
     duties = df["ad_valorem_rate"]
     corruption_scores = df["corruption_score"]
@@ -1244,6 +1324,10 @@ def _derive_headline(
         )
 
     min_duty = duties.min()
+    if pd.isna(min_duty):
+        country_text = ", ".join(selected_countries) if selected_countries else "your selections"
+        product_text = ", ".join(selected_products) if selected_products else "the chosen HTS codes"
+        return f"Specific (per-unit) duties apply for {product_text} across {country_text}. See the ⊞ Specific Duty tab for the rate comparison."
     best_by_duty = df[duties == min_duty]
     min_risk = best_by_duty["corruption_score"].min()
     best_rows = best_by_duty[best_by_duty["corruption_score"] == min_risk]
@@ -1253,9 +1337,12 @@ def _derive_headline(
     risk_display = round(float(min_risk), 1)
     country_phrase = ", ".join(best_countries)
     code_phrase = ", ".join(best_codes)
-    return (
+    headline = (
         f"{country_phrase} offer(s) the lowest duty ({duty_display}%) while staying around risk {risk_display} for HTS {code_phrase}."
     )
+    if specific_only_countries:
+        headline += f" Note: {', '.join(specific_only_countries)} carry specific (per-unit) duties — see the ⊞ Specific Duty tab."
+    return headline
 
 
 def stream_analysis_to_placeholder(
@@ -1447,7 +1534,6 @@ def maybe_run_analysis(
                 pts_3d.append({"name": ctry, "lat": lat, "lon": lon})
 
         if placeholder:
-            import time
             thinking_steps = [
                 (f"Identifying selected countries: <strong>{', '.join(countries)}</strong>", 0.8),
                 (f"Querying HTS SQLite database for: <strong>{', '.join(products)}</strong>", 1.0),
@@ -1472,11 +1558,12 @@ def maybe_run_analysis(
   {rows}
 </div>""", unsafe_allow_html=True)
 
+            import time
             shown = []
             for step in thinking_steps:
                 shown.append(step)
                 render_thinking(shown)
-                time.sleep(step[1])
+                time.sleep(0.4)
 
         with st.spinner("Running analysis..."):
             tariff_df = fetch_tariffs_for_codes(conn, products)
@@ -1489,43 +1576,62 @@ def maybe_run_analysis(
                 duty_exclusions,
                 has_specific_data,
             ) = build_correlation_dataframe(countries, tariff_df, risk_df, ch99_df)
+            # Countries with only specific duties (no ad-valorem rate)
+            _specific_only = []
+            if "specific_amount" in corr_df_table.columns and "chart_eligible" in corr_df_table.columns:
+                _mask = corr_df_table["specific_amount"].notna() & ~corr_df_table["chart_eligible"]
+                _specific_only = sorted(corr_df_table.loc[_mask, "country"].unique().tolist())
+            # Rows with a specific_amount — used for the ⊞ Specific Duty chart tab
+            specific_chart_rows = (
+                corr_df_table[corr_df_table["specific_amount"].notna()].to_dict("records")
+                if "specific_amount" in corr_df_table.columns
+                else []
+            )
+
             headline_source_df = corr_df_full if not corr_df_full.empty else corr_df_table
-            headline_text = _derive_headline(headline_source_df, countries, products)
+            headline_text = _derive_headline(
+                headline_source_df, countries, products, specific_only_countries=_specific_only
+            )
             timestamp = datetime.now().strftime("%I:%M %p")
             risk_snapshot = build_risk_snapshot(risk_df, countries)
             non_ad_text = _format_non_ad_summary_for_text(non_ad_summary)
+            # Only warn about exclusions that are NOT specific/mixed — those are shown in the tab
+            non_specific_exclusions = [
+                item for item in duty_exclusions
+                if item.get("duty_kind") not in ("specific", "mixed")
+            ]
             duty_exclusion_message = None
-            if duty_exclusions:
+            if non_specific_exclusions:
                 preview_labels = [
                     f"{item['hts_code']} ({item['general_duty_rate_text']})"
-                    for item in duty_exclusions[:3]
+                    for item in non_specific_exclusions[:3]
                 ]
                 preview = ", ".join(preview_labels)
-                extra = len(duty_exclusions) - len(preview_labels)
+                extra = len(non_specific_exclusions) - len(preview_labels)
                 if extra > 0:
                     preview = f"{preview}, +{extra} more"
                 duty_exclusion_message = (
-                    f"Skipped {len(duty_exclusions)} product-country pair(s) with non-percentage duties: {preview}."
+                    f"Skipped {len(non_specific_exclusions)} product-country pair(s) with non-percentage duties: {preview}."
                 )
             if non_ad_summary.get("count"):
-                if non_ad_text:
-                    st.info(non_ad_text)
-                if duty_exclusion_message:
-                    st.warning(duty_exclusion_message)
                 logger.info(
                     "Analysis run has non-ad duties",
                     extra={"analysis_run": run_id, "non_ad_count": non_ad_summary.get("count")},
                 )
-            elif duty_exclusion_message:
-                st.warning(duty_exclusion_message)
             headline_html = (
                 f"<p class='analysis-headline'><strong>{headline_text}</strong></p>" if headline_text else ""
             )
 
             if corr_df_full.empty:
-                if len(corr_df_table) and non_ad_summary.get("count"):
+                if has_specific_data:
                     summary_text = (
-                        "All selected products currently rely on quantity- or rule-based duty rates, so no ad valorem analysis is available."
+                        "This HTS code carries specific (per-unit) duties. "
+                        "See the ⊞ Specific Duty tab for the rate comparison across countries."
+                    )
+                elif len(corr_df_table) and non_ad_summary.get("count"):
+                    summary_text = (
+                        "All selected products currently rely on quantity- or rule-based duty rates, "
+                        "so no ad valorem analysis is available."
                     )
                     if non_ad_text:
                         summary_text = f"{summary_text} {non_ad_text}"
@@ -1560,6 +1666,7 @@ def maybe_run_analysis(
                         "duty_exclusions": duty_exclusions,
                         "duty_exclusion_message": duty_exclusion_message,
                         "has_specific_data": has_specific_data,
+                        "specific_chart_data": specific_chart_rows,
                     }
                 )
             else:
@@ -1567,13 +1674,6 @@ def maybe_run_analysis(
                 summary_text = stream_analysis_to_placeholder(
                     corr_df_full, deployment_id, placeholder, headline=headline_text
                 )
-                if non_ad_text:
-                    summary_text = f"{summary_text}\n\n{non_ad_text}"
-                    if placeholder:
-                        placeholder.markdown(
-                            f"<div class='bubble-bot'>{headline_html}{summary_text}</div>",
-                            unsafe_allow_html=True,
-                        )
                 specific_sentence = _summarize_specific_effects(corr_df_table)
                 if specific_sentence:
                     summary_text = f"{summary_text}\n\n{specific_sentence}"
@@ -1590,10 +1690,8 @@ def maybe_run_analysis(
                         "time": timestamp,
                         "type": "analysis",
                         "plotly_fig": fig.to_dict() if fig else None,
-                        # raw_chart_data/raw_chart_columns: full corr_df_full for toggle re-rendering
                         "raw_chart_data": corr_df_full.to_dict("records"),
                         "raw_chart_columns": corr_df_full.columns.tolist(),
-                        # chart_data/chart_columns: formatted display table
                         "chart_data": display_table.to_dict("records"),
                         "chart_columns": display_columns,
                         "risk_snapshot": risk_snapshot,
@@ -1608,6 +1706,7 @@ def maybe_run_analysis(
                         "duty_exclusions": duty_exclusions,
                         "duty_exclusion_message": duty_exclusion_message,
                         "has_specific_data": has_specific_data,
+                        "specific_chart_data": specific_chart_rows,
                     }
                 )
             st.session_state["correlation_signature"] = signature
