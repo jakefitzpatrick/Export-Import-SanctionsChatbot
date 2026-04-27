@@ -55,7 +55,7 @@ python scripts/build_hts_sqlite.py \
   --csv hts_cleaned_final.csv \
   --ch99 Final_Wildcard_Optimized_Chapter99.csv \
   --db data/hts.db
-streamlit run app.py
+python3 -m streamlit run app.py
 ```
 
 > **Important:** Keep `hts_cleaned_final.csv` and `Final_Wildcard_Optimized_Chapter99.csv` in this directory so the build script can populate both the `hts` table and the `chapter_99` table in `data/hts.db`. Every query a user submits is translated by Azure OpenAI into SQL and executed against the local database for a repeatable answer set.
