@@ -66,8 +66,6 @@ HTS_COLUMNS = [
     "unit",
     "general_duty_rate",
     "special_duty_rate",
-    "column2_duty_rate",
-    "additional_duties",
 ]
 CH99_COLUMNS = [
     "NEWCODE", "HTS_MASTER_CODE", "COUNTRY", "NEWRATE", "NEWRATE_CLEAN",
@@ -90,6 +88,10 @@ SQL_SYSTEM_PROMPT = (
     "ch99_newcode, ch99_country, ch99_newrate, ch99_rate_modifier, ch99_additional_pct, "
     "ch99_tradeprogram, ch99_match_priority. "
     "Always treat HTS codes as TEXT strings — never cast them to integers. "
+    "IMPORTANT — the `hts` table does NOT have columns named column2_duty_rate, additional_duties, "
+    "col2_duty_rate, or any variant. Do not reference those names in any query. "
+    "The `chapter` column stores values as unpadded strings ('1', '2', ... '97'), never zero-padded. "
+    "Always use the unpadded form when filtering by chapter (e.g., WHERE chapter = '1', NOT '01'). "
     "Always respond with exactly one valid SQLite SELECT statement. "
     "Do not include surrounding markdown, explanations, or additional text. "
     "Only use SELECT statements; avoid INSERT/UPDATE/DELETE/PRAGMA."
